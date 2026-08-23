@@ -29,6 +29,7 @@ const mocks = vi.hoisted(() => {
   } as ConnectedProvider;
   return {
     preferredAiProvider: w<AiProviderKind | null>("claude_code"),
+    aiSurfacesVisible: w<boolean>(true),
     providerStatus: w<{
       providers: ConnectedProvider[];
       active_index: number | null;
@@ -48,6 +49,7 @@ const mocks = vi.hoisted(() => {
 
 vi.mock("$lib/stores/ai", () => ({
   preferredAiProvider: mocks.preferredAiProvider,
+  aiSurfacesVisible: mocks.aiSurfacesVisible,
 }));
 
 vi.mock("$lib/stores/provider", () => ({

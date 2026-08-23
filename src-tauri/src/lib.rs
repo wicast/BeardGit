@@ -351,6 +351,17 @@ pub fn run() {
             app_core::commands::set_sidebar_collapsed,
             app_core::commands::get_sidebar_nav_layout,
             app_core::commands::set_sidebar_nav_layout,
+            // AI master switch
+            app_core::commands::get_ai_enabled,
+            app_core::commands::set_ai_enabled,
+            // OpenAI-compatible provider connection
+            app_core::commands::get_openai_config,
+            app_core::commands::set_openai_config,
+            // Reveal in file manager
+            app_core::commands::reveal_in_file_manager,
+            // Changes view tree/flat preference
+            app_core::commands::get_changes_tree_view,
+            app_core::commands::set_changes_tree_view,
             // Auto-update preference
             app_core::commands::get_auto_check_updates,
             app_core::commands::set_auto_check_updates,

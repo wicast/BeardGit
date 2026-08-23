@@ -225,6 +225,12 @@ export async function saveCurrentSnapshot(projectPath: string): Promise<void> {
 
   const graph_viewport_cache = buildGraphViewportCacheFromStores(info.head_oid);
 
+  // Per-project view memory: record which sidebar view THIS repo was left
+  // on so a restart restores it too (the in-memory RepoState slice only
+  // covers the current session).
+  const repoSlice = getRepoState(projectPath);
+  const activeView = repoSlice ? get(repoSlice.lastView) || null : null;
+
   const snapshot: ProjectSnapshot = {
     path: projectPath,
     head_branch: info.head_branch ?? null,
@@ -237,6 +243,7 @@ export async function saveCurrentSnapshot(projectPath: string): Promise<void> {
     stash_count,
     change_count: statuses.length,
     graph_viewport_cache,
+    active_view: activeView,
   };
 
   // Mirror into memory first so subsequent tab switches hydrate instantly

@@ -29,8 +29,10 @@
   let submitting = $state(false);
   let error = $state<string | null>(null);
 
-  // Derived provider list — only installed ones show up.
-  let availableProviders = $derived($aiProviders);
+  // Derived provider list — only installed CLI agents show up. The
+  // OpenAI-compatible provider is HTTP-only (headless actions in the
+  // Changes/PR views); it has no agent binary to run a worktree task.
+  let availableProviders = $derived($aiProviders.filter((p) => !p.is_http));
   let branchList = $derived($branches.map((b) => b.name));
 
   // Saved prompts (kind === "prompt") and skills (kind === "skill").

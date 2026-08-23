@@ -20,6 +20,10 @@ vi.mock("$lib/stores/ai", async () => {
     ]),
     aiProvidersDetecting: writable(false),
     preferredAiProvider: writable("claude_code"),
+    aiEnabled: writable(true),
+    aiSurfacesVisible: writable(true),
+    loadAiEnabled: vi.fn(),
+    setAiEnabled: vi.fn(),
     detectAiProviders: vi.fn(),
     setPreferredProvider: vi.fn(),
     loadPreferredProvider: vi.fn(),
@@ -32,6 +36,12 @@ vi.mock("$lib/api/tauri", () => ({
     auto_accept_permissions: false,
   }),
   aiBackgroundSetSettings: vi.fn(),
+  getOpenaiConfig: vi.fn().mockResolvedValue({
+    base_url: "http://localhost:11434/v1",
+    api_key: "",
+    model: "",
+  }),
+  setOpenaiConfig: vi.fn(),
 }));
 
 import AiSettings from "../AiSettings.svelte";
@@ -51,13 +61,13 @@ describe("AiSettings provider icon", () => {
 
   // Lockdown — Spec 4 Phase 5 re-verifies Spec 2's Phase 6 landing so a
   // future refactor can't silently regress back to the old nerd-font span.
-  it("renders exactly one ProviderIcon per ALL_KINDS row (3 total)", async () => {
+  it("renders exactly one ProviderIcon per ALL_KINDS row (4 total)", async () => {
     const { container } = render(AiSettings);
     await tick();
     const rows = container.querySelectorAll(".provider-row");
-    expect(rows.length).toBe(3);
+    expect(rows.length).toBe(4);
     const icons = container.querySelectorAll("img.provider-icon");
-    expect(icons.length).toBe(3);
+    expect(icons.length).toBe(4);
   });
 
   it("never resurrects the legacy `.provider-icon.nf` nerd-font span", async () => {
@@ -79,6 +89,7 @@ describe("AiSettings provider icon", () => {
       "claude_code icon",
       "codex icon",
       "open_code icon",
+      "open_ai icon",
     ]);
   });
 

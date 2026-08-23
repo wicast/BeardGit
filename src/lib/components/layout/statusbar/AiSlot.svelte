@@ -9,7 +9,7 @@
   deep-link lands with the Settings IA overhaul in MT-5).
 -->
 <script lang="ts">
-  import { preferredAiProvider } from "$lib/stores/ai";
+  import { preferredAiProvider, aiSurfacesVisible } from "$lib/stores/ai";
   import ProviderIcon from "$lib/components/ai-sessions/ProviderIcon.svelte";
   import * as m from "$lib/paraglide/messages";
 
@@ -23,6 +23,7 @@
   let provider = $derived($preferredAiProvider);
 </script>
 
+{#if $aiSurfacesVisible}
 <button
   class="ai-slot"
   title={m.statusbar_ai_tooltip()}
@@ -38,6 +39,7 @@
     <span class="label">{m.statusbar_ai_label()}</span>
   {/if}
 </button>
+{/if}
 
 <style>
   .ai-slot {

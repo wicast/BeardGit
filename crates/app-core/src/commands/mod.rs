@@ -47,7 +47,9 @@ mod theme;
 mod worktree;
 
 // Re-export all public items so the rest of the crate sees a flat namespace.
+pub mod reveal;
 pub use advanced::*;
+pub use reveal::*;
 pub use ai_background::*;
 pub use bisect::*;
 pub use branch::*;

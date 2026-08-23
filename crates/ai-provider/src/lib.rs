@@ -24,6 +24,52 @@ pub use types::*;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+// ─── Prompt templates (shared by CLI and HTTP backends) ────────────────────
+//
+// Free functions rather than inline `format!` calls in the trait defaults so
+// the OpenAI-compatible HTTP path (`app-core`) sends byte-identical prompts
+// to what a CLI provider would receive. Change a prompt here and both
+// backends pick it up.
+
+/// Prompt for generating a git commit message from a staged diff.
+pub fn commit_message_prompt(diff: &str) -> String {
+    format!(
+        "Generate a concise git commit message for this diff. \
+         Use the conventional commits format: type(scope): description. \
+         Output ONLY the commit message, no explanations.\n\n{diff}"
+    )
+}
+
+/// Prompt for reviewing a code diff.
+pub fn review_prompt(diff: &str) -> String {
+    format!(
+        "Review this code diff. Report bugs, security issues, \
+         performance problems, and style concerns. Be concise.\n\n{diff}"
+    )
+}
+
+/// Prompt for analyzing code content and answering a question about it.
+pub fn analysis_prompt(content: &str, question: &str) -> String {
+    format!("{question}\n\n{content}")
+}
+
+/// Prompt for generating a PR/MR description from a diff.
+pub fn pr_description_prompt(diff: &str) -> String {
+    format!(
+        "Generate a pull request description for this diff. \
+         Include a summary section and a list of key changes. \
+         Use markdown formatting.\n\n{diff}"
+    )
+}
+
+/// Prompt for reviewing a PR/MR diff.
+pub fn pr_review_prompt(diff: &str) -> String {
+    format!(
+        "Review this pull request diff. Report bugs, security issues, \
+         design concerns, and suggest improvements. Be thorough.\n\n{diff}"
+    )
+}
+
 /// Trait defining the interface for AI coding tool integrations.
 ///
 /// The trait is **comprehensive**: it covers the union of capabilities across
@@ -72,27 +118,12 @@ pub trait AiProvider: Send + Sync {
 
     /// Build a command to generate a commit message from a diff.
     fn build_commit_message_cmd(&self, diff: &str, cwd: &Path) -> Result<Command, AiError> {
-        self.build_execute_command(
-            &format!(
-                "Generate a concise git commit message for this diff. \
-                 Use the conventional commits format: type(scope): description. \
-                 Output ONLY the commit message, no explanations.\n\n{diff}"
-            ),
-            cwd,
-            &ExecuteOptions::default(),
-        )
+        self.build_execute_command(&commit_message_prompt(diff), cwd, &ExecuteOptions::default())
     }
 
     /// Build a command to review code changes.
     fn build_review_cmd(&self, diff: &str, cwd: &Path) -> Result<Command, AiError> {
-        self.build_execute_command(
-            &format!(
-                "Review this code diff. Report bugs, security issues, \
-                 performance problems, and style concerns. Be concise.\n\n{diff}"
-            ),
-            cwd,
-            &ExecuteOptions::default(),
-        )
+        self.build_execute_command(&review_prompt(diff), cwd, &ExecuteOptions::default())
     }
 
     /// Build a command to analyze code and answer a question about it.
@@ -103,7 +134,7 @@ pub trait AiProvider: Send + Sync {
         cwd: &Path,
     ) -> Result<Command, AiError> {
         self.build_execute_command(
-            &format!("{question}\n\n{content}"),
+            &analysis_prompt(content, question),
             cwd,
             &ExecuteOptions::default(),
         )
@@ -111,27 +142,12 @@ pub trait AiProvider: Send + Sync {
 
     /// Build a command to generate a PR/MR description.
     fn build_pr_description_cmd(&self, diff: &str, cwd: &Path) -> Result<Command, AiError> {
-        self.build_execute_command(
-            &format!(
-                "Generate a pull request description for this diff. \
-                 Include a summary section and a list of key changes. \
-                 Use markdown formatting.\n\n{diff}"
-            ),
-            cwd,
-            &ExecuteOptions::default(),
-        )
+        self.build_execute_command(&pr_description_prompt(diff), cwd, &ExecuteOptions::default())
     }
 
     /// Build a command to review a PR/MR.
     fn build_pr_review_cmd(&self, diff: &str, cwd: &Path) -> Result<Command, AiError> {
-        self.build_execute_command(
-            &format!(
-                "Review this pull request diff. Report bugs, security issues, \
-                 design concerns, and suggest improvements. Be thorough.\n\n{diff}"
-            ),
-            cwd,
-            &ExecuteOptions::default(),
-        )
+        self.build_execute_command(&pr_review_prompt(diff), cwd, &ExecuteOptions::default())
     }
 
     /// Build a [`Command`] for a **headless background run** inside a

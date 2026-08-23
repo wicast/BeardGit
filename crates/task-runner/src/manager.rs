@@ -470,6 +470,79 @@ impl TaskManager {
         id
     }
 
+    /// Register a task whose output is already in memory (no child process).
+    ///
+    /// This is the injection point for backends that don't map to a spawned
+    /// `Command` — currently the OpenAI-compatible HTTP provider, whose
+    /// headless actions produce a complete response body from one POST.
+    ///
+    /// Behaves like a real spawn from the outside: the task appears as
+    /// `Running`, each output line streams through
+    /// [`TaskEventSink::on_task_output`](crate::sink::TaskEventSink), and it
+    /// transitions to `Completed` (or `Failed { error }` when `ok` is
+    /// `false`, with `output` doubling as the error text). Returns the new
+    /// [`TaskId`] either way so callers can hand it to the frontend for the
+    /// standard `"task-output"` / `"task-completed"` event flow.
+    pub async fn complete_task(
+        self: &Arc<Self>,
+        label: String,
+        kind: TaskKind,
+        command: String,
+        output: String,
+        ok: bool,
+    ) -> TaskId {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let started_at_ms = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .ok()
+            .map(|d| d.as_millis() as u64);
+
+        let handle = TaskHandle {
+            id,
+            label,
+            status: TaskStatus::Running,
+            cancellable: false,
+            started_at: Some(Instant::now()),
+            finished_at: None,
+            output: Vec::new(),
+            command,
+            started_at_ms,
+            exit_code: None,
+            kind,
+        };
+
+        {
+            let mut tasks = self.tasks.lock().await;
+            tasks.push(handle);
+            prune_finished_tasks(&mut tasks);
+        }
+
+        let info = {
+            let tasks = self.tasks.lock().await;
+            tasks.iter().find(|t| t.id == id).unwrap().to_info()
+        };
+        self.maybe_emit(&info, true);
+        self.sink.on_task_started(info).await;
+
+        for text in output.lines() {
+            let line = OutputLine {
+                stream: Stream::Stdout,
+                text: text.to_string(),
+                timestamp: Instant::now(),
+            };
+            self.append_output(id, line.clone()).await;
+            self.sink.on_task_output(id, line).await;
+        }
+
+        if ok {
+            self.finish_task(id, TaskStatus::Completed).await;
+        } else {
+            self.finish_task(id, TaskStatus::Failed { error: output }).await;
+        }
+
+        id
+    }
+
     /// Cancel a running task. Kills the child process.
     pub async fn cancel(&self, task_id: TaskId) -> Result<(), TaskError> {
         // Check task exists and is in a cancellable, running state.
@@ -733,6 +806,68 @@ mod tests {
     }
 
     // ── 2 ─────────────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_complete_task_streams_output_and_completes() {
+        let (manager, events) = new_manager();
+
+        let id = manager
+            .complete_task(
+                "AI: generate commit message".into(),
+                TaskKind::AiHeadless,
+                "POST http://localhost:11434/v1/chat/completions".into(),
+                "line one\nline two".into(),
+                true,
+            )
+            .await;
+
+        wait_for(&events, |ev| {
+            ev.iter().any(|e| matches!(e, TaskEvent::Completed(_)))
+        })
+        .await;
+
+        let ev = events.lock().await;
+        assert!(ev.iter().any(|e| matches!(e, TaskEvent::Started(_))));
+        assert!(ev.iter().any(
+            |e| matches!(e, TaskEvent::Output { line, .. } if line.text == "line one")
+        ));
+        assert!(ev.iter().any(
+            |e| matches!(e, TaskEvent::Output { line, .. } if line.text == "line two")
+        ));
+        assert!(ev.iter().any(|e| matches!(e, TaskEvent::Completed(_))));
+        assert!(matches!(manager.get_status(id).await, Some(TaskStatus::Completed)));
+        // Output is retrievable through the standard drawer path.
+        let out = manager.get_output(id).await.unwrap();
+        assert_eq!(out.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(), vec!["line one", "line two"]);
+    }
+
+    #[tokio::test]
+    async fn test_complete_task_failure_carries_error() {
+        let (manager, events) = new_manager();
+
+        manager
+            .complete_task(
+                "AI: review code".into(),
+                TaskKind::AiHeadless,
+                "POST http://localhost:9/chat/completions".into(),
+                "OpenAI endpoint returned HTTP 404".into(),
+                false,
+            )
+            .await;
+
+        wait_for(&events, |ev| {
+            ev.iter().any(|e| matches!(e, TaskEvent::Failed(_)))
+        })
+        .await;
+
+        let ev = events.lock().await;
+        assert!(ev.iter().any(|e| matches!(
+            e,
+            TaskEvent::Failed(info)
+                if matches!(&info.status, TaskStatus::Failed { error }
+                    if error == "OpenAI endpoint returned HTTP 404")
+        )));
+    }
 
     #[tokio::test]
     async fn test_spawn_failure() {

@@ -69,6 +69,12 @@ fn make_provider(kind: AiProviderKind) -> Box<dyn ai_provider::AiProvider> {
         AiProviderKind::ClaudeCode => Box::new(claude_code::ClaudeCodeProvider::new()),
         AiProviderKind::Codex => Box::new(codex::CodexProvider::new()),
         AiProviderKind::OpenCode => Box::new(opencode::OpenCodeProvider::new()),
+        // Defensive only: `ai_start_background_run` already rejects
+        // `open_ai` in this file's local `parse_kind` ("unknown AI
+        // provider"), because an HTTP-only provider has no CLI to run a
+        // headless worktree task. This factory cannot return Result, so
+        // fail loudly if the guard above is ever bypassed.
+        AiProviderKind::OpenAi => unreachable!("open_ai cannot run background worktree tasks"),
     }
 }
 

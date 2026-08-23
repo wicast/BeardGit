@@ -21,7 +21,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
-import type { RepoInfo, GraphViewport, GraphViewOptions, CommitInfo, CommitFileChange, BranchInfo, BranchCleanupList, BatchDeleteResult, FileStatus, FileDiff, ProviderUser, ProviderStatusResponse, CiRun, CiRunDetail, TaskInfo, TaskId, TaskOutputLine, ProjectInfo, RecentRepo, RemoteInfo, StatusSummary, StashEntry, TagInfo, CommitStats, ConflictStatus, ConflictFileContents, ThemeMeta, ThemeData, WorktreeInfo, HunkSelection, BlameLine, FileHistoryEntry, RebaseCommit, RebaseAction, GraphColumnConfig, ReflogEntry, CleanItem, ConfigEntry, ConfigScope, SigningStatus, CommitSignature, SignatureVerification, SigningTestResult, PatchPreview, SubmoduleInfo, MrPr, MrPrDetail, MrPrDiffFile, Label, ProjectSnapshot, AvailableAiProvider, RepoAiStatus, AiSession, AiConversation, AiWorktree, AiConfigFile, BisectState, CliAuthStatus, DebugInfo, Issue, IssueDetail, IssueState, Milestone, Workflow, TriggerResult, Release, ReleaseAsset, ReleaseDetail, CreateReleaseInput, EditReleasePatch, StartBackgroundRunRequest, StartBackgroundRunResponse, AiBackgroundSettings, EditorPreferences, SidebarNavLayout, ReadWorkdirFileResult, WorkdirTreeEntry, FileDiffStat, FileContentResult } from "../types";
+import type { RepoInfo, GraphViewport, GraphViewOptions, CommitInfo, CommitFileChange, BranchInfo, BranchCleanupList, BatchDeleteResult, FileStatus, FileDiff, ProviderUser, ProviderStatusResponse, CiRun, CiRunDetail, TaskInfo, TaskId, TaskOutputLine, ProjectInfo, RecentRepo, RemoteInfo, StatusSummary, StashEntry, TagInfo, CommitStats, ConflictStatus, ConflictFileContents, ThemeMeta, ThemeData, WorktreeInfo, HunkSelection, BlameLine, FileHistoryEntry, RebaseCommit, RebaseAction, GraphColumnConfig, ReflogEntry, CleanItem, ConfigEntry, ConfigScope, SigningStatus, CommitSignature, SignatureVerification, SigningTestResult, PatchPreview, SubmoduleInfo, MrPr, MrPrDetail, MrPrDiffFile, Label, ProjectSnapshot, AvailableAiProvider, RepoAiStatus, AiSession, AiConversation, AiWorktree, AiConfigFile, BisectState, CliAuthStatus, DebugInfo, Issue, IssueDetail, IssueState, Milestone, Workflow, TriggerResult, Release, ReleaseAsset, ReleaseDetail, CreateReleaseInput, EditReleasePatch, StartBackgroundRunRequest, StartBackgroundRunResponse, AiBackgroundSettings, EditorPreferences, SidebarNavLayout, OpenAiConfig, ReadWorkdirFileResult, WorkdirTreeEntry, FileDiffStat, FileContentResult } from "../types";
 import type { RemoteRepoConfig, RemoteRepoConfigPatch, ApplyResult, RepoConfigLabel, BranchProtection, ForgeCliStatus } from "../types/repoConfig";
 import type { RequestTreeNode, ParsedRequest, RequestEnvFile, RequestEnvSummary, RunRequestArgs, RunResult, CopyAsArgs, RequestHistoryRow, RequestDiffPayload } from "../types/requests";
 
@@ -1499,6 +1499,54 @@ export async function setSidebarNavLayout(
   layout: SidebarNavLayout,
 ): Promise<void> {
   return invoke<void>("set_sidebar_nav_layout", { layout });
+}
+
+// ── AI master switch ────────────────────────────────────────────────
+
+/** Get whether the AI subsystem is enabled (master switch). */
+export async function getAiEnabled(): Promise<boolean> {
+  return invoke<boolean>("get_ai_enabled");
+}
+
+/** Persist the AI subsystem master switch. */
+export async function setAiEnabled(enabled: boolean): Promise<void> {
+  return invoke<void>("set_ai_enabled", { enabled });
+}
+
+// ── OpenAI-compatible provider connection ───────────────────────────
+
+/** Get the persisted OpenAI-compatible endpoint configuration. */
+export async function getOpenaiConfig(): Promise<OpenAiConfig> {
+  return invoke<OpenAiConfig>("get_openai_config");
+}
+
+/** Persist the OpenAI-compatible endpoint configuration. */
+export async function setOpenaiConfig(config: OpenAiConfig): Promise<void> {
+  return invoke<void>("set_openai_config", { configData: config });
+}
+
+// ── Reveal in file manager ──────────────────────────────────────────
+
+/**
+ * Open `path` in the OS file manager (Finder / Explorer / xdg-open).
+ * Directories open themselves; files are revealed with selection where
+ * the platform supports it. Backend-native because the opener plugin's
+ * capability scope rejects workspace paths.
+ */
+export async function revealInFileManager(path: string): Promise<void> {
+  return invoke<void>("reveal_in_file_manager", { path });
+}
+
+// ── Changes view tree/flat preference ───────────────────────────────
+
+/** Get whether the Changes view groups files into collapsible directories. */
+export async function getChangesTreeView(): Promise<boolean> {
+  return invoke<boolean>("get_changes_tree_view");
+}
+
+/** Persist the Changes view tree/flat preference. */
+export async function setChangesTreeView(enabled: boolean): Promise<void> {
+  return invoke<void>("set_changes_tree_view", { enabled });
 }
 
 // ── Terminal ──────────────────────────────────────────────────────────

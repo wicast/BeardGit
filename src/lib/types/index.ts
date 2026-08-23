@@ -457,6 +457,12 @@ export interface ProjectSnapshot {
    * `#[serde(default)]` so older JSON still deserialises cleanly.
    */
   graph_viewport_cache?: ProjectSnapshotGraphViewportCache | null;
+  /**
+   * Last sidebar view this project was browsed on (per-project view
+   * memory). Written by `saveCurrentSnapshot`; restored on tab
+   * activation. `null`/absent on legacy snapshots.
+   */
+  active_view?: string | null;
 }
 
 /**
@@ -1059,12 +1065,29 @@ export type Tab =
 
 // ─── AI Provider Types ───
 
-export type AiProviderKind = "claude_code" | "codex" | "open_code";
+/**
+ * AI provider kinds. `open_ai` is the OpenAI-compatible HTTP provider
+ * (e.g. a local Ollama server) — headless actions only, no interactive
+ * terminals or background worktree runs (those need a CLI agent binary).
+ */
+export type AiProviderKind = "claude_code" | "codex" | "open_code" | "open_ai";
 
 export interface AvailableAiProvider {
   kind: AiProviderKind;
   binary_path: string;
   version: string | null;
+  /** `true` for HTTP-only providers — `binary_path` is a display placeholder. */
+  is_http?: boolean;
+}
+
+/** Connection settings for the `open_ai` provider (Settings → AI). */
+export interface OpenAiConfig {
+  /** Base URL of the chat-completions API, e.g. `http://localhost:11434/v1`. */
+  base_url: string;
+  /** Bearer token; empty sends no Authorization header. */
+  api_key: string;
+  /** Model id sent in the request body; empty lets the server default. */
+  model: string;
 }
 
 export interface RepoAiStatus {

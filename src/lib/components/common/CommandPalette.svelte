@@ -17,6 +17,8 @@
   import { shortcuts, formatShortcut, type Shortcut } from "$lib/stores/shortcuts";
   import { activeViewStore } from "$lib/stores/navigation";
   import { openCompare } from "$lib/stores/compare";
+  import { aiEnabled } from "$lib/stores/ai";
+  import { get } from "svelte/store";
   import * as m from "$lib/paraglide/messages";
 
   type CommandKind = "navigation" | "shortcut";
@@ -40,8 +42,12 @@
       ["reflog", m.sidebar_reflog],
       ["bisect", m.sidebar_bisect],
       ["submodules", m.sidebar_submodules],
-      ["ai-config", m.sidebar_ai_config],
-      ["ai-sessions", m.sidebar_ai_sessions],
+      ...(get(aiEnabled) !== false
+        ? ([
+            ["ai-config", m.sidebar_ai_config],
+            ["ai-sessions", m.sidebar_ai_sessions],
+          ] as Array<[string, () => string]>)
+        : []),
       ["requests", m.sidebar_requests],
     ];
     const items: Command[] = views.map(([id, label]) => ({

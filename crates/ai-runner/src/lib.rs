@@ -223,6 +223,12 @@ impl AiBackgroundCoordinator {
                 }
                 AiProviderKind::Codex => Box::new(codex::CodexProvider::new()),
                 AiProviderKind::OpenCode => Box::new(opencode::OpenCodeProvider::new()),
+                // Unreachable via app-core: `ai_start_background_run`
+                // rejects open_ai at command entry (its local parse_kind /
+                // provider gates) before the coordinator ever sees it.
+                AiProviderKind::OpenAi => {
+                    unreachable!("open_ai is HTTP-only and cannot run background worktree tasks")
+                }
             }),
         )
     }
@@ -1070,6 +1076,9 @@ fn provider_slug(kind: AiProviderKind) -> &'static str {
         AiProviderKind::ClaudeCode => "claude-code",
         AiProviderKind::Codex => "codex",
         AiProviderKind::OpenCode => "opencode",
+        // Unreachable: app-core's make_provider gate rejects open_ai
+        // before any background run reaches the coordinator.
+        AiProviderKind::OpenAi => "openai-compatible",
     }
 }
 
@@ -1082,6 +1091,11 @@ fn ai_source_for(kind: AiProviderKind) -> AiSource {
         AiProviderKind::ClaudeCode => AiSource::ClaudeCode,
         AiProviderKind::Codex => AiSource::Codex,
         AiProviderKind::OpenCode => AiSource::OpenCode,
+        // Unreachable: app-core's make_provider gate rejects open_ai
+        // before any background run reaches the coordinator. Map to the
+        // OpenCode source rather than panicking — this only feeds an
+        // attribution label on a mutation event that can't happen.
+        AiProviderKind::OpenAi => AiSource::OpenCode,
     }
 }
 

@@ -17,6 +17,7 @@
   import { IconButton, SearchInput } from "$lib/components/ui";
   import PathTree from "$lib/components/common/PathTree.svelte";
   import ContextMenu from "$lib/components/common/ContextMenu.svelte";
+  import { revealInFileManager } from "$lib/api/tauri";
   import type { MenuItem } from "$lib/components/common/ContextMenu.svelte";
   import type { WorkdirTreeEntry } from "$lib/types";
   import * as m from "$lib/paraglide/messages";
@@ -109,6 +110,13 @@
       action: () => onNewFolder(parentDir),
     });
     items.push({ separator: true });
+    items.push({
+      label: m.context_reveal_in_file_manager(),
+      action: () =>
+        void revealInFileManager(entry.path).catch((err) =>
+          addToast({ type: "error", message: String(err) }),
+        ),
+    });
     items.push({
       label: m.editor_copy_path(),
       action: () => {

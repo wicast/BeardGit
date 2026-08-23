@@ -16,6 +16,22 @@
 
   export const settingsIndex: SettingDescriptor[] = [
     {
+      id: "ai.master-switch",
+      label: "Enable AI features",
+      description:
+        "Master switch for the whole AI subsystem. When off, no AI surface renders and no AI tool is ever launched or probed.",
+      category: "ai",
+      anchor: "master-switch",
+    },
+    {
+      id: "ai.openai-config",
+      label: "OpenAI-compatible endpoint",
+      description:
+        "Base URL, API key, and model for OpenAI-compatible providers such as a local Ollama server.",
+      category: "ai",
+      anchor: "openai-config",
+    },
+    {
       id: "ai.provider",
       label: "Preferred AI provider",
       description:
@@ -59,14 +75,20 @@
     detectAiProviders,
     setPreferredProvider,
     loadPreferredProvider,
+    loadAiEnabled,
+    setAiEnabled,
+    aiEnabled,
   } from "$lib/stores/ai";
-  import type { AiBackgroundSettings, AiProviderKind } from "$lib/types";
+  import type { AiBackgroundSettings, AiProviderKind, OpenAiConfig } from "$lib/types";
   import {
     aiBackgroundGetSettings,
     aiBackgroundSetSettings,
+    getOpenaiConfig,
+    setOpenaiConfig,
   } from "$lib/api/tauri";
   import * as m from "$lib/paraglide/messages";
   import {
+    Button,
     Card,
     SettingSection,
     FormRow,
@@ -80,7 +102,39 @@
     { kind: "claude_code", label: () => m.ai_settings_provider_claude() },
     { kind: "codex", label: () => m.ai_settings_provider_codex() },
     { kind: "open_code", label: () => m.ai_settings_provider_opencode() },
+    { kind: "open_ai", label: () => m.ai_settings_provider_openai() },
   ];
+
+  // ── OpenAI-compatible connection form ─────────────────────────────
+  // Defaults mirror the backend's `OpenAiConfig::default()` (local
+  // Ollama). The form renders whenever the provider row is selected so
+  // users without any CLI agent can still wire up headless actions.
+  let oaConfig = $state<OpenAiConfig>({
+    base_url: "http://localhost:11434/v1",
+    api_key: "",
+    model: "",
+  });
+  let oaSaving = $state(false);
+  let oaError = $state<string | null>(null);
+  let oaSavedTick = $state(0);
+
+  async function saveOaConfig() {
+    oaSaving = true;
+    oaError = null;
+    try {
+      await setOpenaiConfig({
+        base_url: oaConfig.base_url.trim(),
+        api_key: oaConfig.api_key.trim(),
+        model: oaConfig.model.trim(),
+      });
+      oaSavedTick++;
+      setTimeout(() => { oaSavedTick = 0; }, 2000);
+    } catch (e) {
+      oaError = String(e);
+    } finally {
+      oaSaving = false;
+    }
+  }
 
   let bgSettings = $state<AiBackgroundSettings>({
     worktree_root: null,
@@ -91,13 +145,20 @@
   let bgError = $state<string | null>(null);
 
   // Fire-and-forget on mount: the Settings shell paints immediately while
-  // the three async operations populate their respective stores in the
+  // the async operations populate their respective stores in the
   // background. `detectAiProviders` runs PATH probes + `--version` calls
   // that can take ~1 s on a cold cache — we render the provider list as
-  // "detecting..." during that window, not "Not found".
+  // "detecting..." during that window, not "Not found". When the master
+  // switch (loaded first) is off, detection self-skips and the provider
+  // grid below isn't rendered at all.
   onMount(() => {
-    void detectAiProviders();
-    void loadPreferredProvider();
+    void (async () => {
+      await loadAiEnabled();
+      if ($aiEnabled !== false) {
+        void detectAiProviders();
+        void loadPreferredProvider();
+      }
+    })();
     void (async () => {
       try {
         bgSettings = await aiBackgroundGetSettings();
@@ -105,7 +166,20 @@
         bgError = String(e);
       }
     })();
+    void (async () => {
+      try {
+        oaConfig = await getOpenaiConfig();
+      } catch {
+        /* keep defaults */
+      }
+    })();
   });
+
+  /** Flip the AI subsystem master switch (persists immediately). */
+  function handleToggleAiEnabled(e: Event) {
+    const enabled = (e.target as HTMLInputElement).checked;
+    void setAiEnabled(enabled).catch(() => undefined);
+  }
 
   async function saveBgSettings() {
     bgSaving = true;
@@ -150,6 +224,24 @@
   title={m.settings_ai_providers_section_title()}
   description={m.settings_ai_providers_section_description()}
 >
+  <SettingSection title={m.ai_settings_master_switch_title()}>
+    <div data-setting-anchor="master-switch">
+      <FormRow
+        label={m.ai_settings_master_switch_label()}
+        for="ai-master-switch"
+        helperText={m.ai_settings_master_switch_hint()}
+      >
+        <Switch
+          id="ai-master-switch"
+          checked={$aiEnabled !== false}
+          testid="ai-master-switch"
+          onchange={handleToggleAiEnabled}
+        />
+      </FormRow>
+    </div>
+  </SettingSection>
+
+  {#if $aiEnabled !== false}
   <SettingSection title={m.ai_settings_title()}>
     <div class="provider-list" data-setting-anchor="provider">
       {#each ALL_KINDS as { kind, label } (kind)}
@@ -168,7 +260,10 @@
           <ProviderIcon provider={kind} size={20} />
           <div class="provider-info">
             <span class="provider-name">{label()}</span>
-            {#if detected && version}
+            {#if kind === "open_ai"}
+              <!-- HTTP provider: always "detected" (no binary to probe). -->
+              <span class="provider-status">{m.ai_settings_openai_http_hint()}</span>
+            {:else if detected && version}
               <span class="provider-version"
                 >{m.ai_settings_version({ version })}</span
               >
@@ -197,9 +292,76 @@
     {#if !$aiProvidersDetecting && $aiProviders.length === 0}
       <div class="empty-state">{m.ai_settings_no_providers()}</div>
     {/if}
+
+    <!-- OpenAI-compatible endpoint configuration: shown while that
+        provider is the preferred/default one. Headless actions (commit
+        message, review, PR description) POST here; interactive
+        terminals / background runs stay CLI-only and don't list it. -->
+    {#if isPreferred("open_ai") || $preferredAiProvider === "open_ai"}
+      <div class="openai-config" data-setting-anchor="openai-config">
+        <Field
+          label={m.ai_settings_openai_base_url()}
+          description={m.ai_settings_openai_base_url_hint()}
+          for="oa-base-url"
+        >
+          <input
+            id="oa-base-url"
+            class="field-input"
+            type="text"
+            placeholder="http://localhost:11434/v1"
+            bind:value={oaConfig.base_url}
+            data-testid="openai-base-url"
+          />
+        </Field>
+        <Field
+          label={m.ai_settings_openai_api_key()}
+          description={m.ai_settings_openai_api_key_hint()}
+          for="oa-api-key"
+        >
+          <input
+            id="oa-api-key"
+            class="field-input"
+            type="password"
+            placeholder=""
+            bind:value={oaConfig.api_key}
+            data-testid="openai-api-key"
+          />
+        </Field>
+        <Field
+          label={m.ai_settings_openai_model()}
+          description={m.ai_settings_openai_model_hint()}
+          for="oa-model"
+        >
+          <input
+            id="oa-model"
+            class="field-input"
+            type="text"
+            placeholder="llama3.1"
+            bind:value={oaConfig.model}
+            data-testid="openai-model"
+          />
+        </Field>
+        <div class="openai-actions">
+          {#if oaError}
+            <span class="error-text" data-testid="openai-save-error">{oaError}</span>
+          {:else if oaSavedTick > 0}
+            <span class="saved-text" data-testid="openai-saved">{m.ai_settings_openai_saved()}</span>
+          {/if}
+          <Button variant="primary" size="sm" disabled={oaSaving} onclick={saveOaConfig}>
+            {m.ai_settings_openai_save()}
+          </Button>
+        </div>
+      </div>
+    {/if}
   </SettingSection>
+  {:else}
+  <div class="disabled-note" data-testid="ai-disabled-note">
+    {m.ai_settings_disabled_note()}
+  </div>
+  {/if}
 </Card>
 
+{#if $aiEnabled !== false}
 <Card
   title={m.settings_ai_background_section_title()}
   description={m.settings_ai_background_section_description()}
@@ -267,8 +429,39 @@
     {/if}
   </SettingSection>
 </Card>
+{/if}
 
 <style>
+  .disabled-note {
+    color: var(--text-secondary);
+    font-size: var(--font-size-sm);
+    font-style: italic;
+    padding: 4px 0;
+  }
+
+  .openai-config {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-top: 8px;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-primary);
+  }
+
+  .openai-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+  }
+
+  .saved-text {
+    color: var(--accent-green);
+    font-size: var(--font-size-xs);
+  }
+
   .provider-list {
     display: flex;
     flex-direction: column;

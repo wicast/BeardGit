@@ -45,6 +45,8 @@
   import { repoInfo } from "$lib/stores/repo";
   import { aiProviders } from "$lib/stores/ai";
   import { requestOpenCreateBackgroundRunDialog } from "$lib/stores/aiBackground";
+  import { addToast } from "$lib/stores/toast";
+  import { revealInFileManager } from "$lib/api/tauri";
   import type { AiProviderKind } from "$lib/types";
   import { fetchRemote, pullRemote, pushRemote } from "$lib/api/tauri";
   import { runMutation } from "$lib/api/runMutation";
@@ -230,6 +232,21 @@
 
   function closeAiMenu() {
     aiMenuOpen = false;
+  }
+
+  /**
+   * Open the active project's root folder in the OS file manager
+   * (Finder / Explorer / xdg-open via the opener plugin). No-op without
+   * an active project; failures surface as a toast.
+   */
+  async function handleOpenProjectFolder() {
+    const path = $activeProject?.path;
+    if (!path) return;
+    try {
+      await revealInFileManager(path);
+    } catch (err) {
+      addToast({ type: "error", message: m.toolbar_open_folder_failed({ error: String(err) }) });
+    }
   }
 
   async function handleAiCliClick(kind: AiProviderKind) {
@@ -480,6 +497,15 @@
   </div>
 
   <div class="actions">
+    {#if $activeProject}
+      <IconButton
+        icon={"\uF07C"}
+        description={m.toolbar_open_folder()}
+        testid="toolbar-open-folder-btn"
+        tone="default"
+        onclick={handleOpenProjectFolder}
+      />
+    {/if}
     <IconButton
       icon={""}
       description={m.tab_terminal_here()}
@@ -487,7 +513,7 @@
       tone="default"
       onclick={handleTerminalClick}
     />
-    {#if ($aiProviders?.length ?? 0) > 0}
+    {#if ($aiProviders?.filter((p) => !p.is_http)?.length ?? 0) > 0}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         class="ai-dropdown"
@@ -513,7 +539,8 @@
             role="menu"
             data-testid="toolbar-ai-menu"
           >
-            {#each $aiProviders as provider (provider.kind)}
+            {#each $aiProviders.filter((p) => !p.is_http) as provider (provider.kind)}
+              <!-- open_ai excluded above: HTTP-only, cannot spawn an interactive CLI. -->
               <button
                 class="action-menu-item"
                 role="menuitem"

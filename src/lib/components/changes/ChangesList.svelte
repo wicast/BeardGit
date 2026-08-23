@@ -8,13 +8,21 @@
   import { openBlame, blameActiveTab } from "$lib/stores/blame";
   import { doStashPush } from "$lib/stores/stashes";
   import { unstagedSelection, stagedSelection } from "$lib/stores/changesSelection";
-  import { cleanPaths, discardFiles } from "$lib/api/tauri";
+  import { cleanPaths, discardFiles, revealInFileManager } from "$lib/api/tauri";
   import { addGitignorePattern } from "$lib/api/tauri";
   import { runMutation } from "$lib/api/runMutation";
+import { addToast } from "$lib/stores/toast";
   import { Button, Checkbox } from "$lib/components/ui";
   import { activeViewStore } from "$lib/stores/navigation";
   import { openTab as openEditorTab } from "$lib/stores/fileEditor";
   import { isBatchSelection, batchActionIds, type BatchActionId } from "./changes-menu";
+  import {
+    buildChangesTree,
+    flattenTree,
+    changedFilesUnderDir,
+    type ChangesTreeNode,
+  } from "./changes-tree";
+  import { changesTreeView, setChangesTreeView } from "$lib/stores/changesView";
 
   let {
     files,
@@ -44,6 +52,8 @@
   let contextMenuX = $state(0);
   let contextMenuY = $state(0);
   let contextMenuFile = $state<string | null>(null);
+  /** Right-clicked directory in tree mode; takes precedence over `contextMenuFile`. */
+  let contextMenuDir = $state<string | null>(null);
   let showDeleteConfirm = $state(false);
   let deleteTargetPath = $state<string | null>(null);
   let showDiscardConfirm = $state(false);
@@ -51,6 +61,66 @@
   let discardTargetIsUntracked = $state(false);
   let showDiscardSelectedConfirm = $state(false);
   let discardSelectedPaths = $state<string[]>([]);
+
+  // ── Tree view ─────────────────────────────────────────────────────
+  // Collapsed-directory set is component-local (both list instances keep
+  // their own); the flat/tree MODE is the persisted global preference.
+  let collapsedDirs = $state<Set<string>>(new Set());
+
+  function toggleCollapse(path: string) {
+    const next = new Set(collapsedDirs);
+    if (next.has(path)) next.delete(path);
+    else next.add(path);
+    collapsedDirs = next;
+  }
+
+  /** Rows currently on screen. Flat mode = every file at depth 0, so a
+   *  single render loop serves both modes and the DOM for a file row is
+   *  identical between them. */
+  let treeRoots = $derived(buildChangesTree(files));
+
+  /** Changed-file count per directory, accumulated in ONE bottom-up DFS
+   *  over the tree (each dir's count = its own subtree total), so the cost
+   *  is O(files) per update regardless of directory nesting. */
+  let dirCounts = $derived.by(() => {
+    const counts = new Map<string, number>();
+    const walk = (nodes: ChangesTreeNode[]): number => {
+      let sum = 0;
+      for (const n of nodes) {
+        if (n.kind === "dir") {
+          const sub = walk(n.children);
+          counts.set(n.path, sub);
+          sum += sub;
+        } else {
+          sum += 1;
+        }
+      }
+      return sum;
+    };
+    walk(treeRoots);
+    return counts;
+  });
+
+  let displayRows: { node: ChangesTreeNode; depth: number }[] = $derived.by(() => {
+    if ($changesTreeView) {
+      return flattenTree(treeRoots, collapsedDirs);
+    }
+    return files.map((f) => ({ node: { kind: "file", path: f.path, name: f.path, file: f }, depth: 0 }));
+  });
+
+  /** Changed-file count beneath a directory (for the folder discard menu). */
+  function dirChangedCount(dirPath: string): number {
+    return dirCounts.get(dirPath) ?? 0;
+  }
+
+  /** Queue a folder discard: expand the directory into its currently-
+   *  changed file paths and reuse the batch-discard confirm flow. */
+  function discardFolder(dirPath: string) {
+    const paths = changedFilesUnderDir(buildChangesTree(files), dirPath);
+    if (paths.length === 0) return;
+    discardSelectedPaths = paths;
+    showDiscardSelectedConfirm = true;
+  }
 
   // Checkbox selection is backed by a store so it PERSISTS across leaving
   // and re-entering the Changes view (see changesSelection.ts). `isStaged`
@@ -99,25 +169,29 @@
     onUnstage?.(paths);
   }
 
-  /** Add every file between two row indices (inclusive) to the selection. */
+  /** Add every FILE between two row indices (inclusive) to the selection.
+   *  Directory rows never join a range — selection stays a set of paths. */
   function selectRange(a: number, b: number) {
     const lo = Math.min(a, b);
     const hi = Math.max(a, b);
     const next = new Set(selected);
     for (let i = lo; i <= hi; i++) {
-      const f = files[i];
-      if (f) next.add(f.path);
+      const row = displayRows[i];
+      if (row && row.node.kind === "file") next.add(row.node.path);
     }
     setSelection(next);
   }
 
   function setFocus(index: number) {
-    focusIndex = Math.max(0, Math.min(index, files.length - 1));
+    focusIndex = Math.max(0, Math.min(index, displayRows.length - 1));
     const row = listEl?.querySelector<HTMLElement>(`[data-row-index="${focusIndex}"]`);
     row?.scrollIntoView({ block: "nearest" });
   }
 
   function handleRowClick(e: MouseEvent, index: number) {
+    const row = displayRows[index];
+    // Directory rows don't open diffs — their chevron handles collapsing.
+    if (!row || row.node.kind === "dir") return;
     // Shift-click selects the range from the anchor to the clicked row
     // instead of opening the diff.
     if (e.shiftKey && anchorIndex >= 0) {
@@ -130,16 +204,16 @@
     anchorIndex = index;
     focusIndex = index;
     listEl?.focus();
-    onFileClick?.(files[index].path);
+    onFileClick?.(row.node.path);
   }
 
   function handleKeydown(e: KeyboardEvent) {
-    if (files.length === 0) return;
+    if (displayRows.length === 0) return;
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
       const delta = e.key === "ArrowDown" ? 1 : -1;
-      const from = focusIndex < 0 ? (delta > 0 ? -1 : files.length) : focusIndex;
-      const next = Math.max(0, Math.min(from + delta, files.length - 1));
+      const from = focusIndex < 0 ? (delta > 0 ? -1 : displayRows.length) : focusIndex;
+      const next = Math.max(0, Math.min(from + delta, displayRows.length - 1));
       if (e.shiftKey) {
         if (anchorIndex < 0) anchorIndex = focusIndex < 0 ? next : focusIndex;
         selectRange(anchorIndex, next);
@@ -149,13 +223,18 @@
       setFocus(next);
     } else if (e.key === " ") {
       e.preventDefault();
-      if (focusIndex >= 0 && focusIndex < files.length) {
-        toggleFile(files[focusIndex].path, focusIndex);
+      const row = displayRows[focusIndex];
+      if (!row) return;
+      if (row.node.kind === "dir") {
+        toggleCollapse(row.node.path);
+      } else {
+        toggleFile(row.node.path, focusIndex);
       }
     } else if (e.key === "Enter") {
       e.preventDefault();
-      if (focusIndex >= 0 && focusIndex < files.length) {
-        onFileClick?.(files[focusIndex].path);
+      const row = displayRows[focusIndex];
+      if (row && row.node.kind === "file") {
+        onFileClick?.(row.node.path);
       }
     }
   }
@@ -301,6 +380,14 @@
     });
 
     items.push({
+      label: m.context_reveal_in_file_manager(),
+      action: () =>
+        void revealInFileManager(filePath).catch((err) =>
+          addToast({ type: "error", message: String(err) }),
+        ),
+    });
+
+    items.push({
       label: m.editor_open_in_editor(),
       action: () => {
         activeViewStore.set("editor");
@@ -440,9 +527,46 @@
   function openContextMenu(e: MouseEvent, filePath: string) {
     e.preventDefault();
     contextMenuFile = filePath;
+    contextMenuDir = null;
     contextMenuX = e.clientX;
     contextMenuY = e.clientY;
     contextMenuVisible = true;
+  }
+
+  /** Context menu for a DIRECTORY row in tree mode. Unstaged lists offer
+   *  folder discard (expanded to the currently-changed files beneath the
+   *  directory and run through the same guarded `discard_files` call);
+   *  both list kinds can copy the folder path. */
+  function openDirContextMenu(e: MouseEvent, dirPath: string) {
+    e.preventDefault();
+    contextMenuFile = null;
+    contextMenuDir = dirPath;
+    contextMenuX = e.clientX;
+    contextMenuY = e.clientY;
+    contextMenuVisible = true;
+  }
+
+  function buildDirContextMenuItems(dirPath: string): MenuItem[] {
+    const items: MenuItem[] = [];
+    const count = dirChangedCount(dirPath);
+    if (!isStaged && count > 0) {
+      items.push({
+        label: m.changes_menu_discard_folder({ count: String(count) }),
+        action: () => discardFolder(dirPath),
+      });
+    }
+    items.push({
+      label: m.context_reveal_in_file_manager(),
+      action: () =>
+        void revealInFileManager(dirPath).catch((err) =>
+          addToast({ type: "error", message: String(err) }),
+        ),
+    });
+    items.push({
+      label: m.changes_menu_copy_path(),
+      action: () => navigator.clipboard.writeText(`${dirPath}/`),
+    });
+    return items;
   }
 </script>
 
@@ -485,46 +609,66 @@
   <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div class="file-list" role="list" tabindex="0" bind:this={listEl} onkeydown={handleKeydown}>
-    {#each files as file, i}
-      {@const stat = stats?.get(file.path)}
+    {#each displayRows as row, i ((row.node.kind === "dir" ? "dir:" : "file:") + row.node.path)}
+      {@const node = row.node}
+      {@const stat = node.kind === "file" ? stats?.get(node.path) : undefined}
       <div
         class="file-item"
-        class:selected={file.path === selectedPath}
+        class:dir-item={node.kind === "dir"}
+        class:selected={node.kind === "file" && node.path === selectedPath}
         class:focused={i === focusIndex}
         role="listitem"
         data-row-index={i}
-        data-testid="file-row-{file.path.replace(/\//g, '-')}"
-        oncontextmenu={(e) => openContextMenu(e, file.path)}
+        data-row-kind={node.kind}
+        data-testid={(node.kind === "dir" ? "dir-row-" : "file-row-") + node.path.replace(/\//g, '-')}
+        style:padding-left="{12 + row.depth * 14}px"
+        oncontextmenu={(e) =>
+          node.kind === "dir" ? openDirContextMenu(e, node.path) : openContextMenu(e, node.path)}
       >
-        <Checkbox
-          checked={selected.has(file.path)}
-          ariaLabel={file.path}
-          onclick={(e) => { e.stopPropagation(); listEl?.focus(); toggleFile(file.path, i); }}
-        />
-        <button
-          class="file-btn"
-          onclick={(e) => handleRowClick(e, i)}
-        >
-          <FileStatusBadge status={file.status} />
-          <span class="file-path">{file.path}</span>
-          {#if stat}
-            {#if stat.binary}
-              <span class="file-stat file-stat-binary">{m.diff_binary_short()}</span>
-            {:else}
-              {#if stat.additions > 0}
-                <span class="file-stat file-stat-add">+{stat.additions}</span>
-              {/if}
-              {#if stat.deletions > 0}
-                <span class="file-stat file-stat-del">-{stat.deletions}</span>
+        {#if node.kind === "dir"}
+          <!-- Directory row: chevron toggles collapse; no checkbox (selection
+               stays a set of file paths), no stage/unstage quick-actions. -->
+          <button
+            class="dir-btn"
+            onclick={() => toggleCollapse(node.path)}
+            aria-label={m.changes_tree_toggle_folder({ path: node.path })}
+            data-testid={"dir-toggle-" + node.path.replace(/\//g, '-')}
+          >
+            <span class="chev nf" class:open={!collapsedDirs.has(node.path)}>{"\uE316"}</span>
+            <span class="dir-name">{node.name}</span>
+          </button>
+          <span class="dir-count">{dirChangedCount(node.path)}</span>
+        {:else}
+          <Checkbox
+            checked={selected.has(node.path)}
+            ariaLabel={node.path}
+            onclick={(e) => { e.stopPropagation(); listEl?.focus(); toggleFile(node.path, i); }}
+          />
+          <button
+            class="file-btn"
+            onclick={(e) => handleRowClick(e, i)}
+          >
+            <FileStatusBadge status={node.file.status} />
+            <span class="file-path">{row.depth > 0 ? node.name : node.path}</span>
+            {#if stat}
+              {#if stat.binary}
+                <span class="file-stat file-stat-binary">{m.diff_binary_short()}</span>
+              {:else}
+                {#if stat.additions > 0}
+                  <span class="file-stat file-stat-add">+{stat.additions}</span>
+                {/if}
+                {#if stat.deletions > 0}
+                  <span class="file-stat file-stat-del">-{stat.deletions}</span>
+                {/if}
               {/if}
             {/if}
+          </button>
+          {#if isStaged && onUnstage}
+            <span class="item-action" role="button" tabindex="0" onclick={(e) => { e.stopPropagation(); onUnstage([node.path]); }} onkeydown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onUnstage([node.path]); } }}>&#8722;</span>
           {/if}
-        </button>
-        {#if isStaged && onUnstage}
-          <span class="item-action" role="button" tabindex="0" onclick={(e) => { e.stopPropagation(); onUnstage([file.path]); }} onkeydown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onUnstage([file.path]); } }}>&#8722;</span>
-        {/if}
-        {#if !isStaged && onStage}
-          <span class="item-action" role="button" tabindex="0" onclick={(e) => { e.stopPropagation(); onStage([file.path]); }} onkeydown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onStage([file.path]); } }}>+</span>
+          {#if !isStaged && onStage}
+            <span class="item-action" role="button" tabindex="0" onclick={(e) => { e.stopPropagation(); onStage([node.path]); }} onkeydown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onStage([node.path]); } }}>+</span>
+          {/if}
         {/if}
       </div>
     {/each}
@@ -532,11 +676,15 @@
 </div>
 
 <ContextMenu
-  items={contextMenuFile ? buildContextMenuItems(contextMenuFile) : []}
+  items={contextMenuDir
+    ? buildDirContextMenuItems(contextMenuDir)
+    : contextMenuFile
+      ? buildContextMenuItems(contextMenuFile)
+      : []}
   x={contextMenuX}
   y={contextMenuY}
   visible={contextMenuVisible}
-  onClose={() => (contextMenuVisible = false)}
+  onClose={() => { contextMenuVisible = false; contextMenuDir = null; }}
 />
 
 {#if showDeleteConfirm && deleteTargetPath}
@@ -713,5 +861,53 @@
 
   .item-action:hover {
     background: var(--overlay-accent-blue);
+  }
+
+  /* ── Tree mode directory rows ─────────────────────────────────────── */
+
+  .dir-item {
+    font-weight: 500;
+  }
+
+  .dir-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+    min-width: 0;
+    background: none;
+    border: none;
+    color: var(--text-primary);
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    cursor: pointer;
+    text-align: left;
+    padding: 2px 0;
+  }
+
+  .dir-btn .chev {
+    color: var(--text-secondary);
+    transition: transform 0.12s ease;
+    display: inline-block;
+  }
+
+  .dir-btn .chev.open {
+    transform: rotate(90deg);
+  }
+
+  .dir-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .dir-count {
+    flex-shrink: 0;
+    font-size: var(--font-size-2xs);
+    color: var(--text-secondary);
+    background: var(--overlay-hover);
+    padding: 1px 6px;
+    border-radius: 8px;
+    font-variant-numeric: tabular-nums;
   }
 </style>

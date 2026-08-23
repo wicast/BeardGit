@@ -46,6 +46,17 @@ export const PROVIDER_META: Record<AiProviderKind, AiProviderMeta> = {
     brandPath:
       "M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4Zm5.2 0L19.2 12l-4.6-4.6L16 6l6 6-6 6-1.4-1.4Z",
   },
+  /**
+   * OpenAI-compatible HTTP provider (local Ollama, LM Studio, vLLM, ...).
+   * No brand logo of its own — `ProviderIcon` falls back to the generic
+   * glyph; this neutral ring path keeps non-icon consumers valid.
+   */
+  open_ai: {
+    name: "OpenAI-compatible",
+    color: "#9aa0a6",
+    brandViewBox: "0 0 24 24",
+    brandPath: "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm0 3a7 7 0 1 1 0 14 7 7 0 0 1 0-14Z",
+  },
 };
 
 /** Convenience lookup: provider kind → display name. */

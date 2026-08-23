@@ -34,6 +34,20 @@ fn default_ai_background_concurrency_cap() -> u32 {
     3
 }
 
+/// Default endpoint for the OpenAI-compatible provider: a local Ollama
+/// server. Users point it at any chat-completions-compatible base URL.
+fn default_openai_base_url() -> String {
+    "http://localhost:11434/v1".to_string()
+}
+
+/// Master switch for the AI subsystem. Default `true` so existing
+/// installations keep their current behaviour; users who don't use any
+/// AI provider can turn every AI surface (and the startup provider
+/// probes) off in Settings → AI.
+fn default_ai_enabled() -> bool {
+    true
+}
+
 /// Default editor-preferences value used by `serde(default = …)` so old
 /// config files (written before the editor preferences existed) load
 /// cleanly with the canonical defaults filled in.
@@ -209,6 +223,45 @@ pub struct GraphColumnConfig {
     pub visible: bool,
 }
 
+/// Connection settings for the OpenAI-compatible provider
+/// (`AiProviderKind::OpenAi`) — any server exposing an
+/// OpenAI-style `POST {base_url}/chat/completions` endpoint.
+///
+/// Typical setup: a local [Ollama](https://ollama.com) server with its
+/// default base URL and no API key. Serves headless actions only (commit
+/// message generation, code review, PR description); interactive terminals
+/// and background worktree runs need a CLI agent binary and are not
+/// available for this kind.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OpenAiConfig {
+    /// Base URL of the chat-completions API, e.g.
+    /// `http://localhost:11434/v1` (Ollama's default). The request path
+    /// `/chat/completions` is appended verbatim — include the `/v1`
+    /// segment when the server requires it.
+    #[serde(default = "default_openai_base_url")]
+    pub base_url: String,
+    /// Bearer token sent as `Authorization: Bearer <api_key>`. Empty means
+    /// no Authorization header at all (local servers like Ollama don't
+    /// require one). Stored in plaintext like the rest of AppConfig — the
+    /// same trade-off forge tokens already make.
+    #[serde(default)]
+    pub api_key: String,
+    /// Model identifier sent in the request body (e.g. `llama3.1`,
+    /// `qwen2.5-coder:32b`). Empty lets the server pick its default.
+    #[serde(default)]
+    pub model: String,
+}
+
+impl Default for OpenAiConfig {
+    fn default() -> Self {
+        Self {
+            base_url: default_openai_base_url(),
+            api_key: String::new(),
+            model: String::new(),
+        }
+    }
+}
+
 /// Persistent application settings stored in `~/.config/beardgit/settings.json`.
 ///
 /// ## Migration
@@ -277,10 +330,22 @@ pub struct AppConfig {
     #[serde(default)]
     pub sidebar_nav_hidden: Vec<String>,
 
+    /// Master switch for the whole AI subsystem (providers, sessions,
+    /// headless actions, background runs). When `false` the frontend hides
+    /// every AI surface and the backend short-circuits provider detection
+    /// so no AI binaries are probed or spawned. Default `true`.
+    #[serde(default = "default_ai_enabled")]
+    pub ai_enabled: bool,
+
     /// Preferred AI provider kind (e.g. `"claude_code"`, `"codex"`, `"open_code"`).
     /// `None` means "use first detected".
     #[serde(default)]
     pub preferred_ai_provider: Option<String>,
+
+    /// Connection settings for the OpenAI-compatible HTTP provider
+    /// (`"open_ai"`). Defaults describe a local Ollama server.
+    #[serde(default)]
+    pub openai_config: OpenAiConfig,
 
     /// Override for where AI background worktrees get created. When `None`,
     /// defaults to `<repo>/.beardgit/ai-worktrees`. Can be absolute or
@@ -314,6 +379,12 @@ pub struct AppConfig {
     /// the common case of content edits.
     #[serde(default)]
     pub diff_show_whitespace: bool,
+
+    /// When true, the Changes view (staged + unstaged lists) groups files
+    /// into collapsible directories instead of a flat list. Default
+    /// `false` — flat stays the long-standing default rendering.
+    #[serde(default)]
+    pub changes_tree_view: bool,
 
     /// When true, all diff views (commit, PR/MR, stash, tag, and the
     /// staging panel in Changes) soft-wrap long lines so they stay
@@ -372,12 +443,15 @@ impl Default for AppConfig {
             sidebar_collapsed: false,
             sidebar_nav_order: default_sidebar_nav_order(),
             sidebar_nav_hidden: Vec::new(),
+            ai_enabled: default_ai_enabled(),
             preferred_ai_provider: None,
+            openai_config: OpenAiConfig::default(),
             ai_worktree_root: None,
             ai_background_concurrency_cap: default_ai_background_concurrency_cap(),
             ai_prompt_auto_accept: false,
             auto_check_updates: default_auto_check_updates(),
             diff_show_whitespace: false,
+            changes_tree_view: false,
             diff_line_wrapping: default_diff_line_wrapping(),
             auto_update_reauth_notice_dismissed_macos: false,
             auto_update_reauth_notice_dismissed_windows: false,

@@ -21,6 +21,12 @@ pub enum AiProviderKind {
     ClaudeCode,
     Codex,
     OpenCode,
+    /// An OpenAI-compatible chat-completions endpoint (e.g. a local
+    /// Ollama server at `http://localhost:11434/v1`). Unlike the CLI
+    /// tools this provider has no binary — headless actions run over
+    /// HTTP; interactive terminals and background worktree runs are
+    /// not available for it.
+    OpenAi,
 }
 
 impl AiProviderKind {
@@ -30,6 +36,7 @@ impl AiProviderKind {
             Self::ClaudeCode => "Claude Code",
             Self::Codex => "Codex",
             Self::OpenCode => "OpenCode",
+            Self::OpenAi => "OpenAI-compatible",
         }
     }
 }
@@ -207,6 +214,11 @@ pub struct AvailableAiProvider {
     pub kind: AiProviderKind,
     pub binary_path: PathBuf,
     pub version: Option<String>,
+    /// `true` for HTTP-only providers ([`AiProviderKind::OpenAi`]) that
+    /// have no on-disk binary. Their `binary_path` is a display
+    /// placeholder (`<openai-compatible>`), not a real executable path.
+    #[serde(default)]
+    pub is_http: bool,
 }
 
 /// Input for launching a headless AI background run in a fresh worktree.
@@ -306,6 +318,25 @@ mod tests {
 
         let json = serde_json::to_string(&AiProviderKind::OpenCode).unwrap();
         assert_eq!(json, "\"open_code\"");
+
+        // HTTP-only kind must round-trip identically on both sides of the
+        // IPC (the TS mirror is `"open_ai"` in `src/lib/types/index.ts`).
+        let json = serde_json::to_string(&AiProviderKind::OpenAi).unwrap();
+        assert_eq!(json, "\"open_ai\"");
+        let decoded: AiProviderKind = serde_json::from_str("\"open_ai\"").unwrap();
+        assert_eq!(decoded, AiProviderKind::OpenAi);
+    }
+
+    #[test]
+    fn openai_provider_entry_marks_is_http() {
+        let provider = AvailableAiProvider {
+            kind: AiProviderKind::OpenAi,
+            binary_path: "<openai-compatible>".into(),
+            version: None,
+            is_http: true,
+        };
+        let json = serde_json::to_string(&provider).unwrap();
+        assert!(json.contains("\"is_http\":true"));
     }
 
     #[test]
@@ -347,6 +378,7 @@ mod tests {
             kind: AiProviderKind::ClaudeCode,
             binary_path: "/usr/local/bin/claude".into(),
             version: Some("2.1.104".into()),
+            is_http: false,
         };
         let json = serde_json::to_string(&provider).unwrap();
         let decoded: AvailableAiProvider = serde_json::from_str(&json).unwrap();

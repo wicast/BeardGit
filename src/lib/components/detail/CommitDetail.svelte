@@ -12,7 +12,9 @@
   import { getCommitSignature, verifyCommitSignature } from "$lib/api/tauri";
   import { formatSigningBackend, signatureChipState } from "$lib/utils/signing";
   import * as m from "$lib/paraglide/messages";
+import { addToast } from "$lib/stores/toast";
   import FileChangeList from "../common/FileChangeList.svelte";
+  import { revealInFileManager } from "$lib/api/tauri";
   import ContextMenu from "../common/ContextMenu.svelte";
   import type { MenuItem } from "../common/ContextMenu.svelte";
   import Xrefs from "../common/Xrefs.svelte";
@@ -129,6 +131,13 @@
         },
       },
     ];
+    items.push({
+      label: m.context_reveal_in_file_manager(),
+      action: () =>
+        void revealInFileManager(path).catch((err) =>
+          addToast({ type: "error", message: String(err) }),
+        ),
+    });
     if (showOpenInEditor) {
       items.push({
         label: m.editor_open_in_editor(),

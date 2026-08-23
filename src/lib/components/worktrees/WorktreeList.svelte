@@ -32,6 +32,7 @@
     claude_code: "Claude",
     codex: "Codex",
     open_code: "OpenCode",
+    open_ai: "OpenAI-compatible",
   };
 
   /** Badge color per AI provider. These use CSS token references for theme compatibility. */
@@ -39,6 +40,7 @@
     claude_code: "var(--accent-orange)",
     codex: "var(--accent-green)",
     open_code: "var(--accent-purple)",
+    open_ai: "var(--text-secondary)",
   };
 
   let showCreateDialog = $state(false);

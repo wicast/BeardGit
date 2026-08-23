@@ -15,6 +15,30 @@ export const repoAiStatus = writable<RepoAiStatus[]>([]);
 export const preferredAiProvider = writable<AiProviderKind | null>(null);
 
 /**
+ * Master switch for the whole AI subsystem (Settings → AI).
+ *
+ * `null` = not yet loaded from persisted config. Consumers split by need:
+ * - Startup AI calls gate on the truthy check ("only run when explicitly
+ *   on"), so a slow config read can never trigger provider probes.
+ * - Surface visibility treats anything-but-`false` as on (see
+ *   {@link aiSurfacesVisible}), matching the persisted default.
+ *
+ * When `false` every AI surface hides (sidebar group, staging AI buttons,
+ * statusbar slot, command-palette entries, AI views reroute to graph) and
+ * the app shell skips all startup AI calls, so no provider binaries are
+ * probed or spawned.
+ */
+export const aiEnabled = writable<boolean | null>(null);
+
+/**
+ * Whether AI affordances (sidebar group, statusbar slot, palette entries)
+ * should render. `false` only when the master switch was loaded as off —
+ * the unloaded (`null`) phase counts as visible so enabled installs don't
+ * see their navigation flicker while config loads.
+ */
+export const aiSurfacesVisible = derived(aiEnabled, (v) => v !== false);
+
+/**
  * Whether an AI-provider detection pass is currently in progress.
  *
  * Defaults to `true` so the very first paint of `AiSettings` (before
@@ -25,21 +49,61 @@ export const preferredAiProvider = writable<AiProviderKind | null>(null);
  */
 export const aiProvidersDetecting = writable(true);
 
-/** Whether at least one AI provider is installed. */
-export const hasAiProvider = derived(aiProviders, (p) => p.length > 0);
+/**
+ * Whether an AI affordance should render: at least one provider installed
+ * AND the subsystem master switch on. Flipping `aiEnabled` off therefore
+ * hides every gated AI button (e.g. staging commit-message/review) with
+ * no per-component edits.
+ */
+export const hasAiProvider = derived(
+  [aiProviders, aiEnabled],
+  ([providers, enabled]) => enabled !== false && providers.length > 0,
+);
 
-/** The effective default provider — preferred if available, otherwise first detected. */
+/** The effective default provider — preferred if available, otherwise first
+ * detected CLI agent. HTTP-only providers (`open_ai`) never become the
+ * default here: this store feeds interactive/background entry points
+ * (background-run dialog, tab-bar AI menu) which require a CLI binary.
+ * Headless actions resolve separately via `resolveDefaultProvider`, which
+ * happily falls back to `open_ai` when no CLI tool is installed. */
 export const defaultAiProvider = derived(
   [aiProviders, preferredAiProvider],
   ([providers, preferred]): AiProviderKind | null => {
     if (preferred && providers.some((p) => p.kind === preferred)) {
       return preferred;
     }
-    return providers.length > 0 ? providers[0].kind : null;
+    const cli = providers.filter((p) => !p.is_http);
+    return cli.length > 0 ? cli[0].kind : null;
   },
 );
 
 // ─── Detection ───
+
+/**
+ * Load the AI master switch from persisted config into the store.
+ * Called once from the app shell's `onMount`; failure keeps the default.
+ */
+export async function loadAiEnabled(): Promise<void> {
+  try {
+    aiEnabled.set(await api.getAiEnabled());
+  } catch {
+    /* keep default (enabled) */
+  }
+}
+
+/**
+ * Persist the AI master switch and mirror it into the store. When turning
+ * the subsystem off, clear detected providers so gated surfaces disappear
+ * immediately instead of waiting for the next detection pass.
+ */
+export async function setAiEnabled(enabled: boolean): Promise<void> {
+  await api.setAiEnabled(enabled);
+  aiEnabled.set(enabled);
+  if (!enabled) {
+    aiProviders.set([]);
+    preferredAiProvider.set(null);
+  }
+}
 
 /**
  * Scan PATH for AI tool binaries and update the store.
@@ -50,6 +114,12 @@ export const defaultAiProvider = derived(
  * block so a failure doesn't leave the UI stuck.
  */
 export async function detectAiProviders(): Promise<void> {
+  // Master switch off (or not yet loaded) → never probe. The backend
+  // command short-circuits too; this avoids the IPC round-trip entirely.
+  if (get(aiEnabled) !== true) {
+    aiProvidersDetecting.set(false);
+    return;
+  }
   aiProvidersDetecting.set(true);
   try {
     await api.aiRefreshDetection();

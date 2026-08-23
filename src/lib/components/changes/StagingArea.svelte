@@ -12,6 +12,7 @@
   import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
   import { runMutation } from "$lib/api/runMutation";
   import { hasAiProvider, aiGenerateCommitMessage, aiReviewCode } from "$lib/stores/ai";
+  import { changesTreeView, setChangesTreeView, loadChangesViewPref } from "$lib/stores/changesView";
   import { addToast } from "$lib/stores/toast";
   import { repoInfo } from "$lib/stores/repo";
   import { taskOutput, selectTask } from "$lib/stores/taskPanel";
@@ -102,6 +103,8 @@
     refreshStatuses();
     refreshDiffs();
     refreshSigningStatus();
+    // Hydrate the persisted flat/tree preference for the lists below.
+    void loadChangesViewPref();
 
     function closeMenus(e: MouseEvent) {
       if (showOverflowMenu && !(e.target as HTMLElement).closest('.toolbar-actions')) {
@@ -395,6 +398,15 @@
 </script>
 
 <div class="staging-area" data-testid="staging-area">
+  <div class="view-toggle-bar">
+    <IconButton
+      tone="default"
+      icon={$changesTreeView ? "\uF0C9" : "\uF07B"}
+      description={m.changes_tree_toggle()}
+      testid="changes-tree-toggle"
+      onclick={() => void setChangesTreeView(!$changesTreeView)}
+    />
+  </div>
   <div class="file-lists">
     <ChangesList
       files={staged}
@@ -566,6 +578,14 @@
     /* Same surface step as List.svelte's .list-panel — the staging
        pane is the "list side" of the Changes split. */
     background: var(--bg-secondary);
+  }
+
+  .view-toggle-bar {
+    display: flex;
+    justify-content: flex-end;
+    padding: 2px 8px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
   }
 
   .file-lists {

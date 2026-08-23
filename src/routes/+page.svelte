@@ -33,6 +33,9 @@
   import MrPrView from "$lib/components/mr-pr/MrPrView.svelte";
   import IssueView from "$lib/components/issues/IssueView.svelte";
   import { activeViewStore, installProviderDisconnectReroute } from "$lib/stores/navigation";
+  import { getRepoState } from "$lib/stores/repo-state";
+  import { resolveViewOnSwitch } from "$lib/stores/repo-state/viewMemory";
+  import { loadProjectSnapshot } from "$lib/stores/project-cache";
   import { branchFileDiff, branchSelectedCommit, branchSelectedFiles, closeBranchCommitDetail } from "$lib/stores/branches";
   import { blamePreviousView } from "$lib/stores/blame";
   import { initTerminalEvents } from "$lib/stores/terminal";
@@ -62,7 +65,12 @@
   import { addToast } from "$lib/stores/toast";
   import { get } from "svelte/store";
   import ShortcutOverlay from "$lib/components/common/ShortcutOverlay.svelte";
-  import { detectAiProviders, loadPreferredProvider } from "$lib/stores/ai";
+  import {
+    detectAiProviders,
+    loadPreferredProvider,
+    loadAiEnabled,
+    aiEnabled,
+  } from "$lib/stores/ai";
   import CreateBackgroundRunDialog from "$lib/components/ai/CreateBackgroundRunDialog.svelte";
   import RepoConfigPage from "$lib/components/repo-config/RepoConfigPage.svelte";
   import {
@@ -242,10 +250,12 @@
     teardownProviderReroute = installProviderDisconnectReroute();
     initProjects();
     initTerminalEvents();
-    detectAiProviders();
-    loadPreferredProvider();
-    startAiBackgroundListeners();
-    refreshAiBackgroundRuns().catch(() => {});
+    // Load the AI master switch BEFORE anything else AI-related. The
+    // actual startup AI calls (detection probes, background listeners)
+    // live in the `$aiEnabled` effect below, which fires once the store
+    // resolves — so when the subsystem is disabled nothing is probed or
+    // spawned, and toggling it back on needs no app restart.
+    await loadAiEnabled();
     // AI session auto-refresh listeners are per-project-path — register
     // once here with the initial active project (if any), and re-register
     // from the `onProjectSwitch` callback below. Putting this at the
@@ -273,16 +283,56 @@
     // changes on open buffers) and remember the teardown for onDestroy.
     teardownFileEditor = startFileEditorListeners();
 
-    // Reset view to graph on project tab switch for instant responsiveness
+    // Restore the incoming project's remembered view instead of forcing
+    // graph: the leaving repo's view is saved into its `RepoState.lastView`
+    // slice below (this callback runs BEFORE `activateProjectTab` swaps
+    // the active path, so `activeView` still *is* the outgoing view), and
+    // the incoming repo's own slice is restored. Returning to a tab
+    // reopens the view you left it on; first visits and out-of-scope views
+    // (global/forge/AI) resolve back to graph.
     onProjectSwitch(() => {
-      // Persist the just-leaving project's open editor tabs so reopening
-      // the project (this session or after a restart) restores the same
-      // set. Persist BEFORE the new project starts loading so we capture
-      // the right paths.
       const prev = get(activeProject);
-      if (prev?.path) persistEditorTabs(prev.path);
+      if (prev?.path) {
+        // Persist the just-leaving project's open editor tabs so reopening
+        // the project (this session or after a restart) restores the same
+        // set. Persist BEFORE the new project starts loading so we capture
+        // the right paths.
+        persistEditorTabs(prev.path);
+        getRepoState(prev.path)?.lastView.set(activeView);
+      }
 
-      tryChangeView("graph");
+      const incoming = get(openTabs)[get(activeTabIndex)];
+      const incomingPath =
+        incoming && (incoming.kind === "project" || incoming.kind === "composite")
+          ? incoming.project.path
+          : null;
+      const incomingRs = incomingPath ? getRepoState(incomingPath) : null;
+      const remembered = incomingRs ? get(incomingRs.lastView) : "";
+      tryChangeView(resolveViewOnSwitch(remembered || null));
+      // Cold start / first visit: the in-memory slice is still unknown.
+      // Refine it from the disk-backed snapshot (which persists each
+      // project's last view across restarts) once it loads — but only if
+      // the user is still on this project AND hasn't explicitly navigated
+      // away from the synchronous graph default in the meantime.
+      if (incomingPath && !remembered) {
+        const target = incomingPath;
+        void loadProjectSnapshot(target)
+          .then((snap) => {
+            const restored = resolveViewOnSwitch(snap?.active_view ?? null);
+            const rs = getRepoState(target);
+            if (
+              restored !== "graph" &&
+              rs &&
+              !get(rs.lastView) &&
+              get(activeProject)?.path === target &&
+              activeView === "graph"
+            ) {
+              rs.lastView.set(restored);
+              tryChangeView(restored);
+            }
+          })
+          .catch(() => {});
+      }
       selectedDiff = null;
       closeStagingDiff();
       // Point the AI session listeners at the freshly active project.
@@ -864,6 +914,32 @@
   $effect(() => {
     const v = $activeViewStore;
     if (v !== activeView) tryChangeView(v);
+  });
+
+  // ── AI master-switch lifecycle ─────────────────────────────────────
+  // Reacts to the persisted AI switch (Settings → AI):
+  // - OFF: reroute away from the AI views (they'd render empty shells),
+  //   mirroring `installProviderDisconnectReroute`.
+  // - ON: run the startup AI calls — detection probes, preferred provider,
+  //   background-run listeners. Fires once when the store resolves after
+  //   `onMount`'s `loadAiEnabled()` and again if the user toggles it on,
+  //   so no restart is needed.
+  $effect(() => {
+    const enabled = $aiEnabled;
+    if (
+      enabled === false &&
+      (activeView === "ai-config" || activeView === "ai-sessions")
+    ) {
+      tryChangeView("graph");
+    }
+  });
+  $effect(() => {
+    if ($aiEnabled) {
+      detectAiProviders();
+      loadPreferredProvider();
+      startAiBackgroundListeners();
+      refreshAiBackgroundRuns().catch(() => {});
+    }
   });
 </script>
 

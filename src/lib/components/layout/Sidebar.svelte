@@ -3,6 +3,7 @@
   import { fileStatuses } from "../../stores/changes";
   import { hasActiveProvider, activeProvider } from "../../stores/provider";
   import { sidebarLayout, updateLayout } from "../../stores/sidebarLayout";
+  import { aiSurfacesVisible } from "../../stores/ai";
   import { type SidebarNavItem } from "../../utils/applyLayout";
   import { addToast } from "../../stores/toast";
   import { IconButton } from "$lib/components/ui";
@@ -69,10 +70,14 @@
     return ids.map((id) => itemById.get(id)).filter((x): x is SidebarNavItem => !!x);
   }
 
-  /** Normal-mode groups: only visible items, and groups with none drop out. */
+  /** Normal-mode groups: only visible items, and groups with none drop out.
+   *  The whole AI group additionally drops out when the AI master switch
+   *  (Settings → AI) is off — hiding it via the persisted `hidden` set
+   *  would fight the user's manual layout customisation. */
   let visibleGroups = $derived.by(() => {
     const hiddenSet = new Set($sidebarLayout.hidden);
     return navGroups
+      .filter((g) => g.key !== "ai" || $aiSurfacesVisible)
       .map((g) => ({ ...g, items: groupItems(g.ids).filter((i) => !hiddenSet.has(i.id)) }))
       .filter((g) => g.items.length > 0);
   });
@@ -80,8 +85,14 @@
   /** Flat visible list for collapsed mode (icons only, no group headers). */
   let visibleFlat = $derived(visibleGroups.flatMap((g) => g.items));
 
-  /** Edit-mode groups: every item, hidden ones included (greyed). */
-  let editGroups = $derived(navGroups.map((g) => ({ ...g, items: groupItems(g.ids) })));
+  /** Edit-mode groups: every item, hidden ones included (greyed). AI
+   *  entries hide here too when the subsystem is disabled — there's
+   *  nothing to customise about a switched-off feature. */
+  let editGroups = $derived(
+    navGroups
+      .filter((g) => g.key !== "ai" || $aiSurfacesVisible)
+      .map((g) => ({ ...g, items: groupItems(g.ids) })),
+  );
 
   /** Force-exit edit mode if the sidebar collapses. */
   $effect(() => {

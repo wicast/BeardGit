@@ -41,6 +41,13 @@ pub struct ProjectSnapshot {
     /// keeps older on-disk snapshots (pre-Phase-8) deserialising cleanly.
     #[serde(default)]
     pub graph_viewport_cache: Option<GraphViewportCache>,
+    /// Last sidebar view the user browsed this project on (`"branches"`,
+    /// `"changes"`, …). Restored per-project on tab activation so
+    /// switching projects — and app restarts — land back on the view
+    /// each repo was left on. `#[serde(default)]` keeps legacy snapshots
+    /// deserialising cleanly; `None` = never recorded.
+    #[serde(default)]
+    pub active_view: Option<String>,
 }
 
 /// Persisted commit-graph viewport slice (see spec's cache shape).
@@ -158,6 +165,7 @@ mod tests {
             stash_count: 1,
             change_count: 9,
             graph_viewport_cache: None,
+            active_view: None,
         };
         save_snapshot(tmp.path(), &snapshot).unwrap();
         let loaded = load_snapshot(tmp.path(), "/Users/test/project").unwrap();
@@ -192,6 +200,7 @@ mod tests {
             stash_count: 0,
             change_count: 0,
             graph_viewport_cache: None,
+            active_view: None,
         };
         save_snapshot(tmp.path(), &snapshot1).unwrap();
 
@@ -207,6 +216,7 @@ mod tests {
             stash_count: 0,
             change_count: 4,
             graph_viewport_cache: None,
+            active_view: None,
         };
         save_snapshot(tmp.path(), &snapshot2).unwrap();
 
@@ -264,11 +274,13 @@ mod tests {
                 offset: 7,
                 cached_at: 1_700_000_000_000,
             }),
+            active_view: Some("branches".to_string()),
         };
         save_snapshot(tmp.path(), &snap).unwrap();
         let loaded = load_snapshot(tmp.path(), "/Users/test/vp")
             .unwrap()
             .unwrap();
+        assert_eq!(loaded.active_view.as_deref(), Some("branches"));
         let cache = loaded.graph_viewport_cache.expect("cache should persist");
         assert_eq!(cache.total_count, 42);
         assert_eq!(cache.top_oid, "abc123");

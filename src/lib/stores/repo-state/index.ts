@@ -55,6 +55,15 @@ export class RepoState {
   readonly mrPr = new MrPrSlice();
   readonly issues = new IssuesSlice();
   /**
+   * Last sidebar view this repo was browsed on. Restored on tab
+   * re-activation (filtered through `viewMemory.ts`'s rememberable-view
+   * set) so switching A→B→A lands back on the view you left, not graph.
+   * Starts as `""` (= "not yet known"): the empty string resolves to
+   * graph synchronously while the disk-backed snapshot refines it
+   * asynchronously for projects whose memory predates this session.
+   */
+  readonly lastView = writable<string>("");
+  /**
    * In-memory mirror of this repo's on-disk `ProjectSnapshot` (ahead/behind,
    * change counts, cached graph viewport). Formerly a central
    * `Map<projectPath, ProjectSnapshot>` in `project-cache.ts`; folded here so a
@@ -198,6 +207,7 @@ export function __resetRepoStateForTests(): void {
   detachedRepoState.graph.reset();
   detachedRepoState.mrPr.clear();
   detachedRepoState.issues.clear();
+  detachedRepoState.lastView.set("");
   detachedRepoState.snapshot.set(null);
   activeRepoPath.set(null);
   containerVersion.set(0);

@@ -25,12 +25,24 @@ use crate::state::AppState;
 
 /// Instantiate the correct [`AiProvider`] implementation for the given kind.
 ///
-/// Returns `Err` for provider kinds that are not yet implemented.
+/// Returns `Err` for provider kinds that are not yet implemented, and for
+/// [`AiProviderKind::OpenAi`] — an HTTP-only backend with no CLI binary,
+/// which therefore cannot be expressed as a `std::process::Command`. Every
+/// CLI-spawning path (interactive terminal, worktree run, background run)
+/// funnels through here, so this one `Err` is what disables those flows for
+/// the HTTP provider; headless actions branch to HTTP before reaching it.
 fn make_provider(kind: AiProviderKind) -> Result<Box<dyn AiProvider>, String> {
     match kind {
         AiProviderKind::ClaudeCode => Ok(Box::new(claude_code::ClaudeCodeProvider::new())),
         AiProviderKind::Codex => Ok(Box::new(codex::CodexProvider::new())),
         AiProviderKind::OpenCode => Ok(Box::new(opencode::OpenCodeProvider::new())),
+        AiProviderKind::OpenAi => Err(
+            "open_ai is an HTTP-only provider (no CLI binary): interactive \
+             terminals and background worktree runs are not available. Headless \
+             actions (commit message / review / PR description) use the endpoint \
+             configured in Settings → AI."
+                .into(),
+        ),
     }
 }
 
@@ -40,7 +52,26 @@ fn parse_kind(provider: &str) -> Result<AiProviderKind, String> {
         "claude_code" => Ok(AiProviderKind::ClaudeCode),
         "codex" => Ok(AiProviderKind::Codex),
         "open_code" => Ok(AiProviderKind::OpenCode),
+        "open_ai" => Ok(AiProviderKind::OpenAi),
         other => Err(format!("unknown AI provider: {other}")),
+    }
+}
+
+/// Enforce the AI master switch (Settings → AI) at every AI command entry.
+///
+/// `ai_refresh_detection` short-circuits even earlier — before spawning any
+/// probe process. This guard closes the remaining IPC surface so a disabled
+/// subsystem can never spawn an agent binary, no matter how the command is
+/// invoked (stale frontend bundle, scripted Tauri call, …).
+fn ensure_ai_enabled(state: &State<'_, AppState>) -> Result<(), String> {
+    let enabled = state.config.lock().map_err(|e| e.to_string())?.ai_enabled;
+    if enabled {
+        Ok(())
+    } else {
+        Err(
+            "AI is disabled. Enable it in Settings → AI to use AI features."
+                .into(),
+        )
     }
 }
 
@@ -108,7 +139,11 @@ pub fn ai_get_repo_status(state: State<'_, AppState>) -> Result<Vec<RepoAiStatus
 
     let mut statuses = Vec::with_capacity(providers.len());
     for available in &providers {
-        let provider = make_provider(available.kind)?;
+        // HTTP-only kinds (open_ai) have no repo config dirs, sessions, or
+        // worktrees — skip rather than erroring the whole status call.
+        let Ok(provider) = make_provider(available.kind) else {
+            continue;
+        };
         let has_config = provider.detect_in_repo(&cwd);
         // `session_count` is the per-provider badge the AI Settings panel
         // renders; after the transcript-first rewrite the source of truth
@@ -145,6 +180,22 @@ pub async fn ai_refresh_detection(
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    // Master-switch short-circuit: when the AI subsystem is disabled we
+    // must not spawn ANY process — the whole point of the switch is that
+    // users without AI tools never see `claude`/`codex` binaries spun up
+    // for version probes. Clear any previously detected providers so a
+    // toggle-off mid-session also empties the UI, then return before the
+    // `spawn_blocking` below and before the transcript watcher starts.
+    let ai_enabled = {
+        let config = state.config.lock().map_err(|e| e.to_string())?;
+        config.ai_enabled
+    };
+    if !ai_enabled {
+        let mut guard = state.ai_providers.lock().map_err(|e| e.to_string())?;
+        *guard = Vec::new();
+        return Ok(());
+    }
+
     let detected = tokio::task::spawn_blocking(|| {
         let kinds = [
             AiProviderKind::ClaudeCode,
@@ -163,9 +214,21 @@ pub async fn ai_refresh_detection(
                     kind,
                     binary_path,
                     version,
+                    is_http: false,
                 });
             }
         }
+        // The OpenAI-compatible provider has no binary to probe: it is
+        // always "available" while the subsystem is enabled, backed by the
+        // persisted `openai_config` (defaults to a local Ollama server).
+        // Headless actions validate the endpoint at request time and fail
+        // gracefully into the task drawer when it's unreachable.
+        detected.push(AvailableAiProvider {
+            kind: AiProviderKind::OpenAi,
+            binary_path: PathBuf::from("<openai-compatible>"),
+            version: None,
+            is_http: true,
+        });
         detected
     })
     .await
@@ -211,6 +274,112 @@ pub async fn ai_refresh_detection(
 
 // ─── Headless Actions ─────────────────────────────────────────────────────────
 
+/// Shared HTTP client for OpenAI-compatible requests. Built once so the
+/// connection pool persists across headless actions instead of being
+/// torn down per call.
+fn openai_http_client() -> Result<&'static reqwest::Client, String> {
+    use std::sync::OnceLock;
+    static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
+    match CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .map_err(|e| format!("OpenAI HTTP client error: {e}"))
+    }) {
+        Ok(client) => Ok(client),
+        Err(e) => Err(e.clone()),
+    }
+}
+
+/// POST `{base_url}/chat/completions` and return the assistant message text.
+///
+/// The single HTTP primitive behind every OpenAI-compatible headless action.
+/// Empty `api_key` sends no `Authorization` header (local servers like
+/// Ollama don't require one); empty `model` omits the field so the server
+/// picks its default. Errors are human-readable strings — they become the
+/// failed task's error text in the frontend drawer.
+async fn openai_chat_completion(
+    config: &storage::OpenAiConfig,
+    prompt: &str,
+) -> Result<String, String> {
+    let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
+    let client = openai_http_client()?;
+
+    let mut body = serde_json::json!({
+        "messages": [{ "role": "user", "content": prompt }],
+        "stream": false,
+    });
+    if !config.model.is_empty() {
+        body["model"] = serde_json::Value::String(config.model.clone());
+    }
+
+    let mut req = client.post(&url).json(&body);
+    if !config.api_key.is_empty() {
+        req = req.bearer_auth(&config.api_key);
+    }
+
+    let resp = req.send().await.map_err(|e| {
+        format!(
+            "OpenAI endpoint unreachable ({url}): {e} — check that the server \
+             is running and Settings → AI → OpenAI-compatible base URL is correct"
+        )
+    })?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        // Prefer the endpoint's own error message when one is present —
+        // Ollama and OpenAI-compatible servers nest it at error.message.
+        let detail = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
+            .unwrap_or_else(|| text.chars().take(300).collect());
+        return Err(format!("OpenAI endpoint returned HTTP {status}: {detail}"));
+    }
+
+    let parsed: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| format!("invalid JSON from OpenAI endpoint: {e}"))?;
+    parsed["choices"][0]["message"]["content"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| "OpenAI response missing choices[0].message.content".to_string())
+}
+
+/// Run an OpenAI-compatible headless action and register its (complete)
+/// output as a task.
+///
+/// The CLI path streams a child process; here the whole response arrives in
+/// one body, so we register a finished task directly via
+/// [`TaskManager::complete_task`]. Either way the frontend receives the same
+/// TaskId + `"task-completed"` / `"task-failed"` event flow.
+async fn openai_headless(
+    state: &State<'_, AppState>,
+    task_manager: &Arc<TaskManager>,
+    label: &str,
+    prompt: String,
+) -> Result<TaskId, String> {
+    let config = {
+        let cfg = state.config.lock().map_err(|e| e.to_string())?;
+        cfg.openai_config.clone()
+    };
+    let command = format!(
+        "POST {}/chat/completions{}",
+        config.base_url.trim_end_matches('/'),
+        if config.model.is_empty() {
+            String::new()
+        } else {
+            format!(" (model: {})", config.model)
+        }
+    );
+    match openai_chat_completion(&config, &prompt).await {
+        Ok(text) => Ok(task_manager
+            .complete_task(label.to_string(), TaskKind::AiHeadless, command, text, true)
+            .await),
+        Err(e) => Ok(task_manager
+            .complete_task(label.to_string(), TaskKind::AiHeadless, command, e, false)
+            .await),
+    }
+}
+
 /// Generate a commit message for the current staged diff.
 ///
 /// Spawns a headless AI task via `TaskManager`. Returns the `TaskId` so the
@@ -221,10 +390,20 @@ pub async fn ai_generate_commit_message(
     state: State<'_, AppState>,
     task_manager: State<'_, Arc<TaskManager>>,
 ) -> Result<TaskId, String> {
-    let cwd = get_active_project_path(&state)?;
+
+    ensure_ai_enabled(&state)?;    let cwd = get_active_project_path(&state)?;
     let kind = parse_kind(&provider)?;
-    let p = make_provider(kind)?;
     let diff = get_staged_diff_text(&cwd).await?;
+    if kind == AiProviderKind::OpenAi {
+        return openai_headless(
+            &state,
+            task_manager.inner(),
+            "AI: generate commit message",
+            ai_provider::commit_message_prompt(&diff),
+        )
+        .await;
+    }
+    let p = make_provider(kind)?;
     let cmd = p
         .build_commit_message_cmd(&diff, &cwd)
         .map_err(|e| e.to_string())?;
@@ -256,8 +435,18 @@ pub async fn ai_analyze_code(
     state: State<'_, AppState>,
     task_manager: State<'_, Arc<TaskManager>>,
 ) -> Result<TaskId, String> {
-    let cwd = get_active_project_path(&state)?;
+
+    ensure_ai_enabled(&state)?;    let cwd = get_active_project_path(&state)?;
     let kind = parse_kind(&provider)?;
+    if kind == AiProviderKind::OpenAi {
+        return openai_headless(
+            &state,
+            task_manager.inner(),
+            "AI: analyze code",
+            ai_provider::analysis_prompt(&content, &question),
+        )
+        .await;
+    }
     let p = make_provider(kind)?;
     let cmd = p
         .build_analysis_cmd(&content, &question, &cwd)
@@ -287,10 +476,20 @@ pub async fn ai_generate_pr_description(
     state: State<'_, AppState>,
     task_manager: State<'_, Arc<TaskManager>>,
 ) -> Result<TaskId, String> {
-    let cwd = get_active_project_path(&state)?;
+
+    ensure_ai_enabled(&state)?;    let cwd = get_active_project_path(&state)?;
     let kind = parse_kind(&provider)?;
-    let p = make_provider(kind)?;
     let diff = get_staged_diff_text(&cwd).await?;
+    if kind == AiProviderKind::OpenAi {
+        return openai_headless(
+            &state,
+            task_manager.inner(),
+            "AI: generate PR description",
+            ai_provider::pr_description_prompt(&diff),
+        )
+        .await;
+    }
+    let p = make_provider(kind)?;
     let cmd = p
         .build_pr_description_cmd(&diff, &cwd)
         .map_err(|e| e.to_string())?;
@@ -321,8 +520,18 @@ pub async fn ai_review_code(
     state: State<'_, AppState>,
     task_manager: State<'_, Arc<TaskManager>>,
 ) -> Result<TaskId, String> {
-    let cwd = get_active_project_path(&state)?;
+
+    ensure_ai_enabled(&state)?;    let cwd = get_active_project_path(&state)?;
     let kind = parse_kind(&provider)?;
+    if kind == AiProviderKind::OpenAi {
+        return openai_headless(
+            &state,
+            task_manager.inner(),
+            "AI: review code",
+            ai_provider::review_prompt(&diff),
+        )
+        .await;
+    }
     let p = make_provider(kind)?;
     let cmd = p.build_review_cmd(&diff, &cwd).map_err(|e| e.to_string())?;
     let (program, args) = command_to_parts(&cmd);
@@ -357,8 +566,18 @@ pub async fn ai_review_pr(
     state: State<'_, AppState>,
     task_manager: State<'_, Arc<TaskManager>>,
 ) -> Result<TaskId, String> {
-    let cwd = get_active_project_path(&state)?;
+
+    ensure_ai_enabled(&state)?;    let cwd = get_active_project_path(&state)?;
     let kind = parse_kind(&provider)?;
+    if kind == AiProviderKind::OpenAi {
+        return openai_headless(
+            &state,
+            task_manager.inner(),
+            "AI: review PR",
+            ai_provider::pr_review_prompt(&diff),
+        )
+        .await;
+    }
     let p = make_provider(kind)?;
     let cmd = p
         .build_pr_review_cmd(&diff, &cwd)
@@ -461,7 +680,8 @@ pub fn ai_launch_interactive(
     state: State<'_, AppState>,
     terminal_manager: State<'_, Arc<TerminalManager>>,
 ) -> Result<SessionId, String> {
-    let cwd = get_active_project_path(&state)?;
+
+    ensure_ai_enabled(&state)?;    let cwd = get_active_project_path(&state)?;
     let kind = parse_kind(&provider)?;
     let p = make_provider(kind)?;
     let cmd = p.build_interactive_cmd(&cwd).map_err(|e| e.to_string())?;
@@ -494,7 +714,8 @@ pub fn ai_launch_worktree(
     state: State<'_, AppState>,
     terminal_manager: State<'_, Arc<TerminalManager>>,
 ) -> Result<Option<SessionId>, String> {
-    let cwd = get_active_project_path(&state)?;
+
+    ensure_ai_enabled(&state)?;    let cwd = get_active_project_path(&state)?;
     let kind = parse_kind(&provider)?;
     let p = make_provider(kind)?;
 
@@ -530,7 +751,8 @@ pub fn ai_resume_conversation(
     state: State<'_, AppState>,
     terminal_manager: State<'_, Arc<TerminalManager>>,
 ) -> Result<Option<SessionId>, String> {
-    let cwd = get_active_project_path(&state)?;
+
+    ensure_ai_enabled(&state)?;    let cwd = get_active_project_path(&state)?;
     let kind = parse_kind(&provider)?;
     let p = make_provider(kind)?;
 
@@ -649,7 +871,8 @@ pub fn ai_cleanup_worktree(
     worktree_path: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let cwd = get_active_project_path(&state)?;
+
+    ensure_ai_enabled(&state)?;    let cwd = get_active_project_path(&state)?;
     let kind = parse_kind(&provider)?;
     let p = make_provider(kind)?;
 

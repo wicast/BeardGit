@@ -75,6 +75,37 @@ pub fn set_sidebar_collapsed(collapsed: bool, state: State<'_, AppState>) -> Res
     config.save(&state.config_path).map_err(|e| e.to_string())
 }
 
+/// Return whether the AI subsystem is enabled (master switch).
+///
+/// Defaults to `true`. When `false`, the frontend hides every AI surface
+/// and skips all startup AI calls, and the backend short-circuits provider
+/// detection so no AI binaries are probed or spawned.
+#[tauri::command]
+pub fn get_ai_enabled(state: State<'_, AppState>) -> Result<bool, String> {
+    let config = state.config.lock().map_err(|e| e.to_string())?;
+    Ok(config.ai_enabled)
+}
+
+/// Persist the AI subsystem master switch.
+///
+/// Turning the switch off also clears the detected-provider list in app
+/// state, so `ai_get_providers` stops reporting stale CLI tools until the
+/// subsystem is re-enabled and detection re-runs.
+#[tauri::command]
+pub fn set_ai_enabled(enabled: bool, state: State<'_, AppState>) -> Result<(), String> {
+    {
+        let mut config = state.config.lock().map_err(|e| e.to_string())?;
+        config.ai_enabled = enabled;
+        config.save(&state.config_path).map_err(|e| e.to_string())?;
+    }
+    if !enabled {
+        if let Ok(mut providers) = state.ai_providers.lock() {
+            providers.clear();
+        }
+    }
+    Ok(())
+}
+
 /// Return whether the app should silently probe for updates on startup.
 ///
 /// Defaults to `true`. Exposed via the settings IPC so the frontend's
@@ -114,6 +145,22 @@ pub fn get_diff_show_whitespace(state: State<'_, AppState>) -> Result<bool, Stri
 pub fn set_diff_show_whitespace(enabled: bool, state: State<'_, AppState>) -> Result<(), String> {
     let mut config = state.config.lock().map_err(|e| e.to_string())?;
     config.diff_show_whitespace = enabled;
+    config.save(&state.config_path).map_err(|e| e.to_string())
+}
+
+/// Return whether the Changes view groups files into collapsible
+/// directories (`true`) or renders the classic flat list (`false`).
+#[tauri::command]
+pub fn get_changes_tree_view(state: State<'_, AppState>) -> Result<bool, String> {
+    let config = state.config.lock().map_err(|e| e.to_string())?;
+    Ok(config.changes_tree_view)
+}
+
+/// Persist the Changes view tree/flat preference.
+#[tauri::command]
+pub fn set_changes_tree_view(enabled: bool, state: State<'_, AppState>) -> Result<(), String> {
+    let mut config = state.config.lock().map_err(|e| e.to_string())?;
+    config.changes_tree_view = enabled;
     config.save(&state.config_path).map_err(|e| e.to_string())
 }
 
@@ -265,6 +312,34 @@ pub fn ai_background_set_settings(
     config.save(&state.config_path).map_err(|e| e.to_string())
 }
 
+// ─── OpenAI-compatible provider connection ───────────────────────────
+
+/// Return the persisted OpenAI-compatible endpoint configuration.
+#[tauri::command]
+pub fn get_openai_config(state: State<'_, AppState>) -> Result<storage::OpenAiConfig, String> {
+    let config = state.config.lock().map_err(|e| e.to_string())?;
+    Ok(config.openai_config.clone())
+}
+
+/// Persist the OpenAI-compatible endpoint configuration. The base URL is
+/// trimmed; an empty API key is valid (local servers don't require one).
+#[tauri::command]
+pub fn set_openai_config(
+    config_data: storage::OpenAiConfig,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mut config = state.config.lock().map_err(|e| e.to_string())?;
+    config.openai_config = storage::OpenAiConfig {
+        base_url: config_data.base_url.trim().to_string(),
+        api_key: config_data.api_key.trim().to_string(),
+        model: config_data.model.trim().to_string(),
+    };
+    if config.openai_config.base_url.is_empty() {
+        return Err("base URL must not be empty".into());
+    }
+    config.save(&state.config_path).map_err(|e| e.to_string())
+}
+
 // ─── Editor preferences (PR2) ────────────────────────────────────────
 
 /// Clamp the numeric editor-preferences fields into their accepted ranges
@@ -333,6 +408,16 @@ pub fn save_project_snapshot(snapshot: storage::ProjectSnapshot) -> Result<(), S
 /// that this command doesn't have, and the strip doesn't read it.
 #[tauri::command]
 pub fn compute_project_snapshot(path: String) -> Result<storage::ProjectSnapshot, String> {
+    let config_dir = dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("beardgit");
+    // The per-project view memory lives in this file too; a status refresh
+    // must carry it forward instead of wiping it back to "never recorded".
+    let previous_active_view = storage::project_cache::load_snapshot(&config_dir, &path)
+        .ok()
+        .flatten()
+        .and_then(|s| s.active_view);
+
     let repo = git_engine::Repository::open(&path).map_err(|e| e.to_string())?;
     let summary = repo.status_summary().map_err(|e| e.to_string())?;
     let status = repo.status().map_err(|e| e.to_string())?;
@@ -348,10 +433,8 @@ pub fn compute_project_snapshot(path: String) -> Result<storage::ProjectSnapshot
         stash_count: summary.stash_count,
         change_count: summary.staged + summary.unstaged + summary.untracked,
         graph_viewport_cache: None,
+        active_view: previous_active_view,
     };
-    let config_dir = dirs::config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("beardgit");
     // Best-effort persist — failure here doesn't invalidate the
     // returned snapshot.
     let _ = storage::project_cache::save_snapshot(&config_dir, &snapshot);

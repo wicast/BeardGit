@@ -13,6 +13,7 @@ import type { AvailableAiProvider, RepoAiStatus, TaskId } from "$lib/types";
 
 import {
   aiProviders,
+  aiEnabled,
   repoAiStatus,
   hasAiProvider,
   defaultAiProvider,
@@ -43,6 +44,9 @@ const MOCK_REPO_STATUS: RepoAiStatus[] = [
 
 describe("AI provider workflow", () => {
   beforeEach(() => {
+    // The F1 master switch gates detection: these workflow tests exercise
+    // the enabled path, so flip the switch on before each case.
+    aiEnabled.set(true);
     aiProviders.set([]);
     repoAiStatus.set([]);
   });
