@@ -283,30 +283,26 @@
     // changes on open buffers) and remember the teardown for onDestroy.
     teardownFileEditor = startFileEditorListeners();
 
-    // Restore the incoming project's remembered view instead of forcing
-    // graph: the leaving repo's view is saved into its `RepoState.lastView`
-    // slice below (this callback runs BEFORE `activateProjectTab` swaps
-    // the active path, so `activeView` still *is* the outgoing view), and
-    // the incoming repo's own slice is restored. Returning to a tab
-    // reopens the view you left it on; first visits and out-of-scope views
-    // (global/forge/AI) resolve back to graph.
-    onProjectSwitch(() => {
-      const prev = get(activeProject);
-      if (prev?.path) {
+    // Save the leaving project's view and restore the incoming project's
+    // own remembered view instead of forcing graph. The `prevPath` /
+    // `nextPath` args are captured in `projects.ts` BEFORE `activeTabIndex`
+    // flips — the callback must never re-derive the outgoing project from
+    // `get(activeProject)` at call time (that already reads the incoming
+    // tab). Returning to a tab reopens the view you left it on; first
+    // visits and out-of-scope views (global/forge/AI, including Settings)
+    // resolve back to graph.
+    onProjectSwitch(({ prevPath, nextPath }) => {
+      if (prevPath) {
         // Persist the just-leaving project's open editor tabs so reopening
         // the project (this session or after a restart) restores the same
         // set. Persist BEFORE the new project starts loading so we capture
-        // the right paths.
-        persistEditorTabs(prev.path);
-        getRepoState(prev.path)?.lastView.set(activeView);
+        // the right paths. (If the outgoing project was closed, its
+        // RepoState is dropped, so the lastView write below no-ops.)
+        persistEditorTabs(prevPath);
+        getRepoState(prevPath)?.lastView.set(activeView);
       }
 
-      const incoming = get(openTabs)[get(activeTabIndex)];
-      const incomingPath =
-        incoming && (incoming.kind === "project" || incoming.kind === "composite")
-          ? incoming.project.path
-          : null;
-      const incomingRs = incomingPath ? getRepoState(incomingPath) : null;
+      const incomingRs = nextPath ? getRepoState(nextPath) : null;
       const remembered = incomingRs ? get(incomingRs.lastView) : "";
       tryChangeView(resolveViewOnSwitch(remembered || null));
       // Cold start / first visit: the in-memory slice is still unknown.
@@ -314,8 +310,8 @@
       // project's last view across restarts) once it loads — but only if
       // the user is still on this project AND hasn't explicitly navigated
       // away from the synchronous graph default in the meantime.
-      if (incomingPath && !remembered) {
-        const target = incomingPath;
+      if (nextPath && !remembered) {
+        const target = nextPath;
         void loadProjectSnapshot(target)
           .then((snap) => {
             const restored = resolveViewOnSwitch(snap?.active_view ?? null);
@@ -335,7 +331,8 @@
       }
       selectedDiff = null;
       closeStagingDiff();
-      // Point the AI session listeners at the freshly active project.
+      // Point the AI session listeners at the freshly active project
+      // (`get(activeProject)` here already resolves to the incoming tab).
       refreshAiSessionListeners();
     });
 

@@ -7,7 +7,7 @@
 
 import { derived, get } from "svelte/store";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { ProjectInfo } from "../types";
+import type { ProjectInfo, Tab } from "../types";
 import {
   openProject as apiOpenProject,
   closeProject as apiCloseProject,
@@ -123,13 +123,49 @@ export interface ActiveRepoStatus {
 export const activeRepoStatus = writable<ActiveRepoStatus | null>(null);
 
 /**
- * Callback invoked whenever we switch to a different project tab.
- * +page.svelte uses this to reset activeView to "graph" for instant UX.
+ * Payload delivered to the project-switch callback: the project paths on
+ * the leaving and entering sides of the switch.
+ *
+ * Both are `null` when that side of the switch is a terminal tab (or there
+ * is no active tab yet). The paths are captured BEFORE `activeTabIndex` is
+ * mutated — the callback must never derive the outgoing path from
+ * `get(activeProject)` at call time, because the active-tab index has
+ * already flipped to the incoming tab by then (the bug this signature
+ * fixes).
  */
-let projectSwitchCallback: (() => void) | null = null;
+export interface ProjectSwitchInfo {
+  /** Outgoing project path, or `null` (terminal / first activation). */
+  prevPath: string | null;
+  /** Incoming project path, or `null` (activation of a terminal tab). */
+  nextPath: string | null;
+}
+
+/** Resolve a tab's project path, or `null` for terminal tabs. */
+function tabProjectPath(tab: Tab | null | undefined): string | null {
+  return tab && (tab.kind === "project" || tab.kind === "composite")
+    ? tab.project.path
+    : null;
+}
+
+/**
+ * Callback invoked whenever the active tab changes (project ↔ project,
+ * project → terminal, close-tab re-activation).
+ *
+ * `+page.svelte` uses this to save the outgoing project's view and restore
+ * the incoming project's own remembered view (per-project navigation
+ * memory; global views like Settings resolve to graph).
+ *
+ * Known activation paths that still bypass this seam (pre-existing, not
+ * covered here): `closeActiveTab` closing a composite's project segment,
+ * `focusTerminal` (aiConversationActions), and the terminal-creation paths
+ * in `tabs.ts` that set `activeTabIndex` directly. They are tracked as
+ * follow-ups; when wired, they should fire this callback with the same
+ * `{prevPath, nextPath}` contract.
+ */
+let projectSwitchCallback: ((info: ProjectSwitchInfo) => void) | null = null;
 
 /** Register a callback to run on project tab switch. */
-export function onProjectSwitch(cb: () => void): void {
+export function onProjectSwitch(cb: (info: ProjectSwitchInfo) => void): void {
   projectSwitchCallback = cb;
 }
 
@@ -230,18 +266,26 @@ export async function switchToTab(tabIndex: number) {
 
   const prevIdx = get(activeTabIndex);
   const tab = tabs[tabIndex];
-
-  // The outgoing project's graph viewport + selection no longer need caching
-  // here — like the branch list and changes selection, they live per-repo in
-  // the RepoState container and survive the switch as a pointer swap (spec 08).
+  // Capture the outgoing tab BEFORE the active index flips — deriving it
+  // from `get(activeProject)` after `activeTabIndex.set` below would read
+  // the incoming tab, which is the bug this fix corrects.
+  const prevTab = prevIdx >= 0 && prevIdx < tabs.length ? tabs[prevIdx] : null;
 
   // Set active index immediately for instant tab highlight
   activeTabIndex.set(tabIndex);
 
+  // Fire the view-memory choreography on any tab change (project ↔
+  // project, or project → terminal). Terminal switches carry `nextPath:
+  // null` so the leaving project's view is still saved; a terminal has no
+  // project view to restore.
+  if (tabIndex !== prevIdx) {
+    projectSwitchCallback?.({
+      prevPath: tabProjectPath(prevTab),
+      nextPath: tabProjectPath(tab),
+    });
+  }
+
   if (tab.kind === "project" || tab.kind === "composite") {
-    if (tabIndex !== prevIdx) {
-      projectSwitchCallback?.();
-    }
     await activateProjectTab(tabIndex);
   } else if (tab.kind === "terminal") {
     // Terminal tab — update title bar; no repo context in the status bar.
@@ -423,6 +467,15 @@ export async function closeTab(tabIndex: number) {
 
   const closedPath = tab.project.path;
 
+  // Capture the active project BEFORE the close mutates the tab array /
+  // active index, so the switch choreography knows what we're leaving.
+  const activeIdxAtEntry = get(activeTabIndex);
+  const prevActivePath = tabProjectPath(
+    activeIdxAtEntry >= 0 && activeIdxAtEntry < tabs.length
+      ? tabs[activeIdxAtEntry]
+      : null,
+  );
+
   await apiCloseProject(projectIdx);
 
   // Free this repo's state container — bounds memory to open tabs (spec 08).
@@ -459,9 +512,34 @@ export async function closeTab(tabIndex: number) {
 
   activeTabIndex.set(newActiveIdx);
   const newTabs = get(openTabs);
+  const nextActiveTab =
+    newActiveIdx >= 0 && newActiveIdx < newTabs.length
+      ? newTabs[newActiveIdx]
+      : null;
+  const nextActivePath = tabProjectPath(nextActiveTab);
+
+  // Re-run the view-memory choreography ONLY when the active project
+  // actually changed. Closing an inactive tab keeps the same active
+  // project — firing here would yank the user off a global view (e.g.
+  // Settings) for no reason. The outgoing project is being closed, so its
+  // RepoState is already dropped and the save side no-ops gracefully.
+  if (prevActivePath !== nextActivePath) {
+    projectSwitchCallback?.({
+      prevPath: prevActivePath,
+      nextPath: nextActivePath,
+    });
+  }
+
   if (newActiveIdx >= 0 && newActiveIdx < newTabs.length &&
       (newTabs[newActiveIdx].kind === "project" || newTabs[newActiveIdx].kind === "composite")) {
     await activateProjectTab(newActiveIdx);
+  } else if (nextActiveTab?.kind === "terminal" && prevActivePath !== null) {
+    // The active project was closed and a terminal tab takes its place:
+    // detach the RepoState facades (mirrors the `switchToTab` terminal
+    // branch) so no stale `activeRepoPath` points at the closed project.
+    setActiveRepoPath(null);
+    activeRepoStatus.set(null);
+    getCurrentWindow().setTitle(`${nextActiveTab.terminal.title} — BeardGit`);
   }
 }
 
@@ -513,10 +591,16 @@ export async function switchToNextTab(): Promise<void> {
   tabsNext();
   const newTab = get(activeTab);
   const newIdx = get(activeTabIndex);
+  const prevPath = tabProjectPath(prevTab);
+  const newPath = tabProjectPath(newTab);
+  // Fire the view-memory choreography on ANY active-project change — also
+  // project → terminal (`nextPath: null`), so the leaving project's view
+  // is saved, mirroring `switchToTab`. Only the project activation itself
+  // (activateProjectTab) is gated on the incoming tab being a project.
+  if (prevPath !== newPath) {
+    projectSwitchCallback?.({ prevPath, nextPath: newPath });
+  }
   if (newTab && (newTab.kind === "project" || newTab.kind === "composite")) {
-    const prevPath = prevTab?.kind === "project" ? prevTab.project.path :
-                     prevTab?.kind === "composite" ? prevTab.project.path : null;
-    const newPath = newTab.kind === "project" ? newTab.project.path : newTab.project.path;
     if (prevPath !== newPath) {
       await activateProjectTab(newIdx);
     }
@@ -528,10 +612,14 @@ export async function switchToPrevTab(): Promise<void> {
   tabsPrev();
   const newTab = get(activeTab);
   const newIdx = get(activeTabIndex);
+  const prevPath = tabProjectPath(prevTab);
+  const newPath = tabProjectPath(newTab);
+  // Same as switchToNextTab: the callback fires on any path change
+  // (including project → terminal) so the outgoing view is saved.
+  if (prevPath !== newPath) {
+    projectSwitchCallback?.({ prevPath, nextPath: newPath });
+  }
   if (newTab && (newTab.kind === "project" || newTab.kind === "composite")) {
-    const prevPath = prevTab?.kind === "project" ? prevTab.project.path :
-                     prevTab?.kind === "composite" ? prevTab.project.path : null;
-    const newPath = newTab.kind === "project" ? newTab.project.path : newTab.project.path;
     if (prevPath !== newPath) {
       await activateProjectTab(newIdx);
     }

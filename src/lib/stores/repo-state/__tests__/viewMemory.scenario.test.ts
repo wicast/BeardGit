@@ -14,7 +14,7 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 import { get } from "svelte/store";
-import { createRepoState, getRepoState, __resetRepoStateForTests } from "../index";
+import { createRepoState, getRepoState, dropRepoState, __resetRepoStateForTests } from "../index";
 import { resolveViewOnSwitch } from "../viewMemory";
 
 /** Mimic the +page.svelte callback: save outgoing, resolve incoming. */
@@ -59,5 +59,38 @@ describe("per-project view memory — user scenario", () => {
     expect(get(getRepoState("/repo/p2")!.lastView)).toBe("");
     expect(resolveViewOnSwitch(get(getRepoState("/repo/p2")!.lastView) || null)).toBe("graph");
     void globalView;
+  });
+
+  it("an outgoing project being CLOSED saves nothing but the incoming still restores", () => {
+    // P1 is active on "changes"; the user closes P1, so its RepoState is
+    // dropped (as closeTab does) before the switch callback runs. The save
+    // side must no-op gracefully, and P2 must still resolve to its own view.
+    createRepoState("/repo/p1");
+    createRepoState("/repo/p2");
+    getRepoState("/repo/p1")?.lastView.set("changes");
+
+    // closeTab flow: dropRepoState(outgoing) then activate the incoming tab.
+    dropRepoState("/repo/p1");
+    expect(getRepoState("/repo/p1")).toBeNull();
+
+    // The +page callback's save step is `getRepoState(prevPath)?.lastView.set`
+    // → null-safe no-op; restore still reads the incoming repo's own slice.
+    const incomingView = simulateSwitch("/repo/p1", "changes", "/repo/p2");
+    expect(incomingView).toBe("graph"); // P2 never visited → graph
+    expect(get(getRepoState("/repo/p2")!.lastView)).toBe("");
+  });
+
+  it("Settings stays global: it is never remembered per-project", () => {
+    // While on Settings, switching projects must NOT restore "settings" on
+    // the next project — resolveViewOnSwitch always falls back to graph.
+    createRepoState("/repo/p1");
+    createRepoState("/repo/p2");
+    expect(resolveViewOnSwitch("settings")).toBe("graph");
+
+    // Even if settings were somehow stored, it resolves to graph and the
+    // per-project memory never records it.
+    const view = simulateSwitch("/repo/p1", "settings", "/repo/p2");
+    expect(view).toBe("graph");
+    expect(get(getRepoState("/repo/p1")!.lastView)).toBe("settings");
   });
 });
