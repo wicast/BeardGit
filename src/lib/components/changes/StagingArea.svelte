@@ -6,8 +6,8 @@
   import { onMount, onDestroy } from "svelte";
   import type { UnlistenFn } from "@tauri-apps/api/event";
   import * as m from "$lib/paraglide/messages";
-  import { getHeadMessage, createWorkingTreePatch, savePatchToFile, pushRemote, saveAiReview, getSigningConfig } from "$lib/api/tauri";
-  import type { SigningStatus } from "$lib/types";
+  import { getHeadMessage, createWorkingTreePatch, savePatchToFile, pushRemote, saveAiReview, getSigningConfig, getTasks, getTaskOutput } from "$lib/api/tauri";
+  import type { SigningStatus, TaskInfo } from "$lib/types";
   import { formatSigningBackend } from "$lib/utils/signing";
   import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
   import { runMutation } from "$lib/api/runMutation";
@@ -15,13 +15,13 @@
   import { changesTreeView, setChangesTreeView, loadChangesViewPref } from "$lib/stores/changesView";
   import { addToast } from "$lib/stores/toast";
   import { repoInfo } from "$lib/stores/repo";
-  import { taskOutput, selectTask } from "$lib/stores/taskPanel";
+  import { taskOutput, selectTask, tasks } from "$lib/stores/taskPanel";
+  import { get } from "svelte/store";
   import { setTaskSubtitle } from "$lib/stores/tasks";
   import { openTasksPopover } from "$lib/stores/tasksPopover";
   import { stripAnsi } from "$lib/utils/strip-ansi";
   import { listen } from "@tauri-apps/api/event";
   import { save } from "@tauri-apps/plugin-dialog";
-  import type { TaskInfo } from "$lib/types";
   import { Button, Checkbox, IconButton } from "$lib/components/ui";
 
   let {
@@ -171,32 +171,123 @@
       return;
     }
     aiCommitLoading = true;
+    let taskId: number;
     try {
-      const taskId = await aiGenerateCommitMessage();
-      // Don't auto-open the tasks popover — the user clicked Generate
-      // commit message to fill the message box, not to babysit a task.
-      // The row still appears in the drawer for after-the-fact viewing
-      // (TaskKind::AiHeadless flows through the unified bridge). Same
-      // behaviour the Code Review button now has.
-      selectTask(taskId);
-
-      const unlistenCompleted = trackListener(await listen<TaskInfo>("task-completed", (event) => {
-        if (event.payload.id === taskId) {
-          unlistenCompleted();
-          unlistenFailed();
-          collectAiOutput(taskId);
-          aiCommitLoading = false;
-        }
-      }));
-      const unlistenFailed = trackListener(await listen<TaskInfo>("task-failed", (event) => {
-        if (event.payload.id === taskId) {
-          unlistenCompleted();
-          unlistenFailed();
-          aiCommitLoading = false;
-        }
-      }));
+      taskId = await aiGenerateCommitMessage();
     } catch {
       aiCommitLoading = false;
+      return;
+    }
+
+    // ── Authoritative backend snapshot ─────────────────────────────────
+    // The open_ai HTTP path completes/fails the task INSIDE the invoke,
+    // so its lifecycle events can be emitted BEFORE this component's
+    // listeners exist (and before the global stores settle). Do NOT trust
+    // event/store timing for the terminal state — fetch it straight from
+    // the backend (`get_tasks` retains finished tasks), then pull the
+    // output via `get_task_output`. This is the only path immune to every
+    // delivery race.
+    let backendInfo: TaskInfo | undefined;
+    try {
+      backendInfo = (await getTasks()).find((t) => t.id === taskId);
+    } catch {
+      backendInfo = undefined; // fall through to the listener path below
+    }
+    if (backendInfo) {
+      if (backendInfo.status.state === "completed") {
+        const lines = await getTaskOutput(taskId);
+        const raw = lines.map((l) => l.text).join("\n").trim();
+        const cleaned = stripAnsi(raw);
+        if (cleaned) {
+          const parts = splitMessage(cleaned);
+          summary = parts.summary;
+          description = parts.description;
+        }
+        aiCommitLoading = false;
+        // Keep the drawer cursor + output buffer in sync for later viewing.
+        void selectTask(taskId);
+        return;
+      }
+      if (backendInfo.status.state === "failed") {
+        addToast({
+          type: "error",
+          message: m.ai_commit_message_failed({ error: backendInfo.status.error }),
+          details: backendInfo.status.error,
+        });
+        aiCommitLoading = false;
+        void selectTask(taskId);
+        return;
+      }
+      // queued/running (CLI path) → fall through to the listeners.
+    }
+
+    // ── CLI path: task still running ────────────────────────────────────
+    // Race guard: if the task reaches its terminal state before the
+    // listeners below are registered (fast CLI exit), we read the state
+    // back from the `tasks` store instead. `handled` makes the two paths
+    // mutually exclusive so a late-arriving event can never double-fire.
+    let handled = false;
+
+    const finishFromStatus = (status: TaskInfo["status"]): void => {
+      if (handled) return;
+      handled = true;
+      aiCommitLoading = false;
+      if (status.state === "completed") {
+        collectAiOutput(taskId);
+      } else if (status.state === "failed") {
+        addToast({
+          type: "error",
+          message: m.ai_commit_message_failed({ error: status.error }),
+          details: status.error,
+        });
+      }
+      // queued/running/cancelled → nothing to harvest or toast; the task
+      // drawer remains the source of truth for those states.
+    };
+
+    // Register both listeners BEFORE the synchronous store check below.
+    // There is no `await` between the registrations and the `get(tasks)`
+    // read, so a terminal event that arrives during that window is already
+    // reflected in the store by the global listeners when we check.
+    const unlistenCompleted = trackListener(await listen<TaskInfo>("task-completed", (event) => {
+      if (event.payload.id === taskId) {
+        unlistenCompleted();
+        unlistenFailed();
+        finishFromStatus(event.payload.status);
+      }
+    }));
+    const unlistenFailed = trackListener(await listen<TaskInfo>("task-failed", (event) => {
+      if (event.payload.id === taskId) {
+        unlistenCompleted();
+        unlistenFailed();
+        finishFromStatus(event.payload.status);
+      }
+    }));
+
+    // Don't auto-open the tasks popover — the user clicked Generate
+    // commit message to fill the message box, not to babysit a task.
+    // The row still appears in the drawer for after-the-fact viewing
+    // (TaskKind::AiHeadless flows through the unified bridge). Same
+    // behaviour the Code Review button now has.
+    //
+    // AWAIT the selection: `selectTask` back-fills `taskOutput` from the
+    // backend when no `task-output` events were captured locally. Without
+    // the await, the synchronous `collectAiOutput` read below would race
+    // the back-fill and see an empty buffer — the exact "API succeeded but
+    // the message box stays empty" symptom. When events DID arrive the
+    // back-fill is a no-op (buffer already populated).
+    await selectTask(taskId);
+
+    // Synchronous catch-up: if the task already ended while we were
+    // awaiting the invoke, the global store holds its terminal TaskInfo.
+    const existing = get(tasks).find((t) => t.id === taskId);
+    if (
+      existing &&
+      (existing.status.state === "completed" || existing.status.state === "failed")
+    ) {
+      unlistenCompleted();
+      unlistenFailed();
+      finishFromStatus(existing.status);
     }
   }
 

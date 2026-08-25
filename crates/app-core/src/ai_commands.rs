@@ -302,7 +302,7 @@ async fn openai_chat_completion(
     config: &storage::OpenAiConfig,
     prompt: &str,
 ) -> Result<String, String> {
-    let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
+    let url = openai_chat_url(&config.base_url);
     let client = openai_http_client()?;
 
     let mut body = serde_json::json!({
@@ -336,7 +336,22 @@ async fn openai_chat_completion(
         return Err(format!("OpenAI endpoint returned HTTP {status}: {detail}"));
     }
 
-    let parsed: serde_json::Value = serde_json::from_str(&text)
+    extract_openai_content(&text)
+}
+
+/// Pure helper: build the chat-completions URL from a base URL (trailing
+/// slashes trimmed). Shared by the real request path and the settings
+/// connection test so both hit exactly the same endpoint.
+pub(crate) fn openai_chat_url(base_url: &str) -> String {
+    format!("{}/chat/completions", base_url.trim_end_matches('/'))
+}
+
+/// Pure helper: extract `choices[0].message.content` from a raw
+/// chat-completions response body. Mirrors the tail of
+/// [`openai_chat_completion`] so the parsing contract is testable offline
+/// (no live HTTP server required).
+pub(crate) fn extract_openai_content(text: &str) -> Result<String, String> {
+    let parsed: serde_json::Value = serde_json::from_str(text)
         .map_err(|e| format!("invalid JSON from OpenAI endpoint: {e}"))?;
     parsed["choices"][0]["message"]["content"]
         .as_str()
@@ -377,6 +392,72 @@ async fn openai_headless(
         Err(e) => Ok(task_manager
             .complete_task(label.to_string(), TaskKind::AiHeadless, command, e, false)
             .await),
+    }
+}
+
+/// Structured result of an OpenAI-compatible endpoint probe (Settings → AI).
+#[derive(Debug, serde::Serialize)]
+pub struct OpenAiTestResult {
+    /// `true` when a minimal chat-completion round-trip succeeded.
+    pub ok: bool,
+    /// HTTP status of the response; `0` when the request never got one
+    /// (unreachable host, timeout, DNS failure, …).
+    pub status: u16,
+    /// Success: first ~300 chars of the assistant reply. Failure: the
+    /// same human-readable error the headless actions would surface.
+    pub message: String,
+    /// The exact `{base_url}/chat/completions` endpoint that was hit
+    /// (trailing slashes trimmed) — for diagnosing path mistakes.
+    pub url: String,
+    /// The model id sent with the request; `None` when the field was
+    /// omitted because the config had none. Makes the "empty model"
+    /// failure (OpenAI's 400, Ollama's server-default) visible.
+    pub model: Option<String>,
+}
+
+/// Probe the configured OpenAI-compatible endpoint with a minimal
+/// chat-completion round-trip.
+///
+/// Mirrors the headless action path exactly — same URL builder, same HTTP
+/// client, same `openai_chat_completion` primitive — so a green test here
+/// guarantees commit-message generation / review / PR description will work
+/// against the persisted Settings → AI configuration.
+///
+/// Returns `Ok(OpenAiTestResult)` even on connection/HTTP failures: those
+/// are the diagnostic output the user needs, not an IPC error. Only truly
+/// unexpected setup problems (AI subsystem disabled, config lock poisoned)
+/// reject the invoke.
+#[tauri::command]
+pub async fn ai_test_openai_endpoint(
+    state: State<'_, AppState>,
+) -> Result<OpenAiTestResult, String> {
+    ensure_ai_enabled(&state)?;
+    let config = {
+        let cfg = state.config.lock().map_err(|e| e.to_string())?;
+        cfg.openai_config.clone()
+    };
+    let url = openai_chat_url(&config.base_url);
+    let model = if config.model.is_empty() {
+        None
+    } else {
+        Some(config.model.clone())
+    };
+    // Fixed, tiny prompt: no repo/diff context, negligible token cost.
+    match openai_chat_completion(&config, "Reply with the single word: ok").await {
+        Ok(content) => Ok(OpenAiTestResult {
+            ok: true,
+            status: 200,
+            message: content.chars().take(300).collect(),
+            url,
+            model,
+        }),
+        Err(e) => Ok(OpenAiTestResult {
+            ok: false,
+            status: 0,
+            message: e,
+            url,
+            model,
+        }),
     }
 }
 
@@ -1138,6 +1219,35 @@ pub async fn ai_create_config_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn openai_chat_url_trims_trailing_slash() {
+        assert_eq!(
+            openai_chat_url("http://localhost:11434/v1/"),
+            "http://localhost:11434/v1/chat/completions"
+        );
+        assert_eq!(
+            openai_chat_url("http://localhost:11434/v1"),
+            "http://localhost:11434/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn extract_openai_content_parses_nested_content() {
+        let body = r#"{"choices":[{"message":{"content":"ok"}}]}"#;
+        assert_eq!(extract_openai_content(body).unwrap(), "ok");
+    }
+
+    #[test]
+    fn extract_openai_content_rejects_missing_content() {
+        let body = r#"{"choices":[{"message":{}}]}"#;
+        assert!(extract_openai_content(body).is_err());
+    }
+
+    #[test]
+    fn extract_openai_content_rejects_invalid_json() {
+        assert!(extract_openai_content("not json").is_err());
+    }
 
     #[test]
     fn validate_path_accepts_project_scope() {

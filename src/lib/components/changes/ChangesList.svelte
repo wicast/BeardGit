@@ -20,6 +20,9 @@ import { addToast } from "$lib/stores/toast";
     buildChangesTree,
     flattenTree,
     changedFilesUnderDir,
+    dirSelectionCounts,
+    dirCheckState,
+    toggleDirSelection,
     type ChangesTreeNode,
   } from "./changes-tree";
   import { changesTreeView, setChangesTreeView } from "$lib/stores/changesView";
@@ -79,38 +82,21 @@ import { addToast } from "$lib/stores/toast";
    *  identical between them. */
   let treeRoots = $derived(buildChangesTree(files));
 
-  /** Changed-file count per directory, accumulated in ONE bottom-up DFS
-   *  over the tree (each dir's count = its own subtree total), so the cost
-   *  is O(files) per update regardless of directory nesting. */
-  let dirCounts = $derived.by(() => {
-    const counts = new Map<string, number>();
-    const walk = (nodes: ChangesTreeNode[]): number => {
-      let sum = 0;
-      for (const n of nodes) {
-        if (n.kind === "dir") {
-          const sub = walk(n.children);
-          counts.set(n.path, sub);
-          sum += sub;
-        } else {
-          sum += 1;
-        }
-      }
-      return sum;
-    };
-    walk(treeRoots);
-    return counts;
-  });
+  /** Per-directory {changed, selected} tallies, computed in ONE bottom-up
+   *  DFS over the tree (O(files) regardless of nesting). Drives both the
+   *  changed-count badge and the directory checkbox three-state. */
+  let dirSelCounts = $derived.by(() => dirSelectionCounts(treeRoots, selected));
 
   let displayRows: { node: ChangesTreeNode; depth: number }[] = $derived.by(() => {
     if ($changesTreeView) {
       return flattenTree(treeRoots, collapsedDirs);
     }
-    return files.map((f) => ({ node: { kind: "file", path: f.path, name: f.path, file: f }, depth: 0 }));
+    return files.map((f) => ({ node: { kind: "file", path: f.path, name: f.path, payload: f }, depth: 0 }));
   });
 
   /** Changed-file count beneath a directory (for the folder discard menu). */
   function dirChangedCount(dirPath: string): number {
-    return dirCounts.get(dirPath) ?? 0;
+    return dirSelCounts.get(dirPath)?.changed ?? 0;
   }
 
   /** Queue a folder discard: expand the directory into its currently-
@@ -626,15 +612,27 @@ import { addToast } from "$lib/stores/toast";
           node.kind === "dir" ? openDirContextMenu(e, node.path) : openContextMenu(e, node.path)}
       >
         {#if node.kind === "dir"}
-          <!-- Directory row: chevron toggles collapse; no checkbox (selection
-               stays a set of file paths), no stage/unstage quick-actions. -->
+          {@const st = dirCheckState(dirSelCounts, node.path)}
+          <!-- Directory row: the checkbox recursively selects/deselects the
+               whole subtree (three-state), the chevron toggles collapse. -->
+          <Checkbox
+            checked={st === "all"}
+            indeterminate={st === "some"}
+            ariaLabel={m.changes_select_folder({ path: node.name })}
+            testid={"dir-checkbox-" + node.path.replace(/\//g, '-')}
+            onclick={(e) => {
+              e.stopPropagation();
+              listEl?.focus();
+              setSelection(toggleDirSelection(treeRoots, node.path, selected));
+            }}
+          />
           <button
             class="dir-btn"
             onclick={() => toggleCollapse(node.path)}
             aria-label={m.changes_tree_toggle_folder({ path: node.path })}
             data-testid={"dir-toggle-" + node.path.replace(/\//g, '-')}
           >
-            <span class="chev nf" class:open={!collapsedDirs.has(node.path)}>{"\uE316"}</span>
+            <span class="chev" class:open={!collapsedDirs.has(node.path)}>{"\u25B6"}</span>
             <span class="dir-name">{node.name}</span>
           </button>
           <span class="dir-count">{dirChangedCount(node.path)}</span>
@@ -648,7 +646,7 @@ import { addToast } from "$lib/stores/toast";
             class="file-btn"
             onclick={(e) => handleRowClick(e, i)}
           >
-            <FileStatusBadge status={node.file.status} />
+            <FileStatusBadge status={node.payload.status} />
             <span class="file-path">{row.depth > 0 ? node.name : node.path}</span>
             {#if stat}
               {#if stat.binary}
@@ -889,6 +887,10 @@ import { addToast } from "$lib/stores/toast";
     color: var(--text-secondary);
     transition: transform 0.12s ease;
     display: inline-block;
+    /* Small arrowhead (▶ / ▼ via rotate): a standard Unicode glyph, not a
+       Nerd Font private-use codepoint, so it never renders as tofu. */
+    font-size: 10px;
+    line-height: 1;
   }
 
   .dir-btn .chev.open {

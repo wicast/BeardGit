@@ -1090,6 +1090,20 @@ export interface OpenAiConfig {
   model: string;
 }
 
+/** Result of probing the OpenAI-compatible endpoint (Settings → AI "Test"). */
+export interface OpenAiTestResult {
+  /** `true` when a minimal chat-completion round-trip succeeded. */
+  ok: boolean;
+  /** HTTP status of the response; `0` when the request never got one. */
+  status: number;
+  /** Success: reply text. Failure: human-readable error. */
+  message: string;
+  /** The exact `{base_url}/chat/completions` endpoint that was hit. */
+  url: string;
+  /** The model sent; `null` when the field was omitted. */
+  model: string | null;
+}
+
 export interface RepoAiStatus {
   kind: AiProviderKind;
   has_config: boolean;

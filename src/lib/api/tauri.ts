@@ -21,7 +21,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
-import type { RepoInfo, GraphViewport, GraphViewOptions, CommitInfo, CommitFileChange, BranchInfo, BranchCleanupList, BatchDeleteResult, FileStatus, FileDiff, ProviderUser, ProviderStatusResponse, CiRun, CiRunDetail, TaskInfo, TaskId, TaskOutputLine, ProjectInfo, RecentRepo, RemoteInfo, StatusSummary, StashEntry, TagInfo, CommitStats, ConflictStatus, ConflictFileContents, ThemeMeta, ThemeData, WorktreeInfo, HunkSelection, BlameLine, FileHistoryEntry, RebaseCommit, RebaseAction, GraphColumnConfig, ReflogEntry, CleanItem, ConfigEntry, ConfigScope, SigningStatus, CommitSignature, SignatureVerification, SigningTestResult, PatchPreview, SubmoduleInfo, MrPr, MrPrDetail, MrPrDiffFile, Label, ProjectSnapshot, AvailableAiProvider, RepoAiStatus, AiSession, AiConversation, AiWorktree, AiConfigFile, BisectState, CliAuthStatus, DebugInfo, Issue, IssueDetail, IssueState, Milestone, Workflow, TriggerResult, Release, ReleaseAsset, ReleaseDetail, CreateReleaseInput, EditReleasePatch, StartBackgroundRunRequest, StartBackgroundRunResponse, AiBackgroundSettings, EditorPreferences, SidebarNavLayout, OpenAiConfig, ReadWorkdirFileResult, WorkdirTreeEntry, FileDiffStat, FileContentResult } from "../types";
+import type { RepoInfo, GraphViewport, GraphViewOptions, CommitInfo, CommitFileChange, BranchInfo, BranchCleanupList, BatchDeleteResult, FileStatus, FileDiff, ProviderUser, ProviderStatusResponse, CiRun, CiRunDetail, TaskInfo, TaskId, TaskOutputLine, ProjectInfo, RecentRepo, RemoteInfo, StatusSummary, StashEntry, TagInfo, CommitStats, ConflictStatus, ConflictFileContents, ThemeMeta, ThemeData, WorktreeInfo, HunkSelection, BlameLine, FileHistoryEntry, RebaseCommit, RebaseAction, GraphColumnConfig, ReflogEntry, CleanItem, ConfigEntry, ConfigScope, SigningStatus, CommitSignature, SignatureVerification, SigningTestResult, PatchPreview, SubmoduleInfo, MrPr, MrPrDetail, MrPrDiffFile, Label, ProjectSnapshot, AvailableAiProvider, RepoAiStatus, AiSession, AiConversation, AiWorktree, AiConfigFile, BisectState, CliAuthStatus, DebugInfo, Issue, IssueDetail, IssueState, Milestone, Workflow, TriggerResult, Release, ReleaseAsset, ReleaseDetail, CreateReleaseInput, EditReleasePatch, StartBackgroundRunRequest, StartBackgroundRunResponse, AiBackgroundSettings, EditorPreferences, SidebarNavLayout, OpenAiConfig, OpenAiTestResult, ReadWorkdirFileResult, WorkdirTreeEntry, FileDiffStat, FileContentResult } from "../types";
 import type { RemoteRepoConfig, RemoteRepoConfigPatch, ApplyResult, RepoConfigLabel, BranchProtection, ForgeCliStatus } from "../types/repoConfig";
 import type { RequestTreeNode, ParsedRequest, RequestEnvFile, RequestEnvSummary, RunRequestArgs, RunResult, CopyAsArgs, RequestHistoryRow, RequestDiffPayload } from "../types/requests";
 
@@ -1523,6 +1523,16 @@ export async function getOpenaiConfig(): Promise<OpenAiConfig> {
 /** Persist the OpenAI-compatible endpoint configuration. */
 export async function setOpenaiConfig(config: OpenAiConfig): Promise<void> {
   return invoke<void>("set_openai_config", { configData: config });
+}
+
+/**
+ * Probe the persisted OpenAI-compatible endpoint with a minimal
+ * chat-completion round-trip (Settings → AI "Test" button). Returns a
+ * structured result — connection, HTTP, and model failures all come back
+ * as `ok: false` with a human-readable `message`, not as an invoke error.
+ */
+export async function aiTestOpenaiEndpoint(): Promise<OpenAiTestResult> {
+  return invoke<OpenAiTestResult>("ai_test_openai_endpoint");
 }
 
 // ── Reveal in file manager ──────────────────────────────────────────

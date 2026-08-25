@@ -389,6 +389,7 @@ pub fn run() {
             app_core::ai_commands::ai_refresh_detection,
             app_core::ai_commands::ai_generate_commit_message,
             app_core::ai_commands::ai_analyze_code,
+            app_core::ai_commands::ai_test_openai_endpoint,
             app_core::ai_commands::ai_generate_pr_description,
             app_core::ai_commands::ai_review_code,
             app_core::ai_commands::ai_review_pr,

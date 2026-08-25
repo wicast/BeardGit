@@ -287,7 +287,7 @@ import { addToast } from "$lib/stores/toast";
     {#if files.length > 0}
       <div class="detail-section">
         <div class="detail-label">{m.commit_detail_files({ count: String(files.length) })}</div>
-        <FileChangeList files={files} onSelect={handleFileSelect} onContextMenu={openFileContextMenu} />
+        <FileChangeList files={files} onSelect={handleFileSelect} onContextMenu={openFileContextMenu} treeToggle />
       </div>
     {/if}
   </div>

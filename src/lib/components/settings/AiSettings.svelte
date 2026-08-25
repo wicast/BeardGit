@@ -79,12 +79,13 @@
     setAiEnabled,
     aiEnabled,
   } from "$lib/stores/ai";
-  import type { AiBackgroundSettings, AiProviderKind, OpenAiConfig } from "$lib/types";
+  import type { AiBackgroundSettings, AiProviderKind, OpenAiConfig, OpenAiTestResult } from "$lib/types";
   import {
     aiBackgroundGetSettings,
     aiBackgroundSetSettings,
     getOpenaiConfig,
     setOpenaiConfig,
+    aiTestOpenaiEndpoint,
   } from "$lib/api/tauri";
   import * as m from "$lib/paraglide/messages";
   import {
@@ -117,6 +118,32 @@
   let oaSaving = $state(false);
   let oaError = $state<string | null>(null);
   let oaSavedTick = $state(0);
+
+  // "Test" button: probes the SAVED endpoint config (same config the
+  // headless actions read), so the result reflects what commit-message
+  // generation will actually hit. Users must click Save first after
+  // editing the fields — the result row echoes the tested URL/model to
+  // make a stale-config test self-evident.
+  let oaTesting = $state(false);
+  let oaTestResult = $state<OpenAiTestResult | null>(null);
+
+  async function testOaConfig() {
+    oaTesting = true;
+    oaTestResult = null;
+    try {
+      oaTestResult = await aiTestOpenaiEndpoint();
+    } catch (e) {
+      oaTestResult = {
+        ok: false,
+        status: 0,
+        message: String(e),
+        url: oaConfig.base_url.trim(),
+        model: oaConfig.model.trim() || null,
+      };
+    } finally {
+      oaTesting = false;
+    }
+  }
 
   async function saveOaConfig() {
     oaSaving = true;
@@ -347,10 +374,40 @@
           {:else if oaSavedTick > 0}
             <span class="saved-text" data-testid="openai-saved">{m.ai_settings_openai_saved()}</span>
           {/if}
+          <Button
+            variant="neutral"
+            size="sm"
+            loading={oaTesting}
+            disabled={oaTesting}
+            testid="openai-test"
+            onclick={testOaConfig}
+          >
+            {m.ai_settings_openai_test()}
+          </Button>
           <Button variant="primary" size="sm" disabled={oaSaving} onclick={saveOaConfig}>
             {m.ai_settings_openai_save()}
           </Button>
         </div>
+        {#if oaTestResult}
+          <div class="openai-test-result" data-testid="openai-test-result">
+            {#if oaTestResult.ok}
+              <span class="saved-text">
+                {m.ai_settings_openai_test_success({ status: String(oaTestResult.status) })}
+              </span>
+              {#if oaTestResult.message}
+                <code class="test-reply">{oaTestResult.message}</code>
+              {/if}
+            {:else}
+              <span class="error-text">{oaTestResult.message}</span>
+            {/if}
+            <div class="test-endpoint">
+              <code data-testid="openai-test-url">{oaTestResult.url}</code>
+              {#if oaTestResult.model}
+                <code data-testid="openai-test-model">model: {oaTestResult.model}</code>
+              {/if}
+            </div>
+          </div>
+        {/if}
       </div>
     {/if}
   </SettingSection>
@@ -455,6 +512,37 @@
     align-items: center;
     justify-content: flex-end;
     gap: 10px;
+  }
+
+  .openai-test-result {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    font-size: var(--font-size-xs);
+  }
+
+  .test-reply {
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .test-endpoint {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    color: var(--text-muted);
+  }
+
+  .test-endpoint code {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-2xs);
+    color: var(--text-secondary);
   }
 
   .saved-text {
