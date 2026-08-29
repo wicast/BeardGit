@@ -64,8 +64,10 @@ export const hasAiProvider = derived(
  * detected CLI agent. HTTP-only providers (`open_ai`) never become the
  * default here: this store feeds interactive/background entry points
  * (background-run dialog, tab-bar AI menu) which require a CLI binary.
- * Headless actions resolve separately via `resolveDefaultProvider`, which
- * happily falls back to `open_ai` when no CLI tool is installed. */
+ * Headless actions resolve separately via {@link resolveProvider}, which
+ * happily falls back to `open_ai` when no CLI tool is installed — and
+ * waits for the persisted preference first so a user who picked the API
+ * provider never gets a CLI binary spawned behind their back. */
 export const defaultAiProvider = derived(
   [aiProviders, preferredAiProvider],
   ([providers, preferred]): AiProviderKind | null => {
@@ -74,6 +76,34 @@ export const defaultAiProvider = derived(
     }
     const cli = providers.filter((p) => !p.is_http);
     return cli.length > 0 ? cli[0].kind : null;
+  },
+);
+
+/**
+ * Providers that ship a CLI binary, i.e. the only ones that can back an
+ * interactive terminal or a background worktree run. Interactive entry
+ * points (tab-bar AI menu, background-run dialog) iterate this instead of
+ * `aiProviders` so the HTTP-only `open_ai` kind is never offered —
+ * selecting it there could only ever end in a failed spawn.
+ */
+export const cliAiProviders = derived(aiProviders, (providers) =>
+  providers.filter((p) => !p.is_http),
+);
+
+/**
+ * `true` when the effective provider is the HTTP-only kind. Under API mode
+ * every headless action (commit message, review, analysis, PR description)
+ * is served by the configured endpoint, and the CLI-backed surfaces —
+ * interactive terminals, background worktree runs, session browsing — are
+ * hidden rather than left to fail.
+ */
+export const apiOnlyMode = derived(
+  [aiProviders, preferredAiProvider],
+  ([providers, preferred]) => {
+    if (preferred) {
+      return providers.some((p) => p.kind === preferred && p.is_http);
+    }
+    return false;
   },
 );
 
@@ -124,22 +154,75 @@ export async function detectAiProviders(): Promise<void> {
   try {
     await api.aiRefreshDetection();
     const providers = await api.aiGetProviders();
-    aiProviders.set(providers);
+    aiProviders.set(providers ?? []);
   } finally {
     aiProvidersDetecting.set(false);
   }
 }
 
+/**
+ * Whether {@link preferredAiProvider} holds the persisted value yet.
+ *
+ * Headless actions must not resolve a provider before this is true: the
+ * store starts as `null`, and a `null` preference means "auto" — which
+ * picks the first *detected CLI* provider. On a cold start that is
+ * exactly the window in which a user who picked the API provider would
+ * silently get `codex` spawned instead.
+ */
+let preferenceLoaded = false;
+
+/** In-flight loader shared by concurrent callers of {@link ensureProviderState}. */
+let stateLoader: Promise<void> | null = null;
+
+/**
+ * Block until the provider list and the persisted preference are both in
+ * the stores.
+ *
+ * Every provider-resolution path funnels through here. Detection is only
+ * re-run when the list is still empty (startup beat us to it in the
+ * common case, so this is usually a single cheap preference read).
+ * Failures are swallowed — the caller's own "no provider detected" error
+ * is a better message than whatever the IPC layer raised.
+ */
+async function ensureProviderState(): Promise<void> {
+  if (preferenceLoaded && get(aiProviders).length > 0) return;
+  if (!stateLoader) {
+    stateLoader = (async () => {
+      try {
+        if (get(aiEnabled) === null) {
+          await loadAiEnabled();
+        }
+        if (get(aiEnabled) !== false && get(aiProviders).length === 0) {
+          await detectAiProviders();
+        }
+        if (!preferenceLoaded) {
+          await loadPreferredProvider();
+        }
+      } catch {
+        // Leave the stores as they are; resolution reports the real problem.
+      } finally {
+        stateLoader = null;
+      }
+    })();
+  }
+  await stateLoader;
+}
+
 /** Load the preferred AI provider from persisted config. */
 export async function loadPreferredProvider(): Promise<void> {
-  const pref = await api.aiGetPreferredProvider();
-  preferredAiProvider.set(pref as AiProviderKind | null);
+  try {
+    const pref = await api.aiGetPreferredProvider();
+    preferredAiProvider.set((pref ?? null) as AiProviderKind | null);
+  } finally {
+    preferenceLoaded = true;
+  }
 }
 
 /** Set and persist the preferred AI provider. Pass `null` to reset to auto-detect. */
 export async function setPreferredProvider(provider: AiProviderKind | null): Promise<void> {
   await api.aiSetPreferredProvider(provider);
   preferredAiProvider.set(provider);
+  preferenceLoaded = true;
 }
 
 /** Refresh AI status for the current repo. */
@@ -154,59 +237,15 @@ export async function refreshRepoAiStatus(): Promise<void> {
 
 // ─── Headless Actions ───
 
-export async function aiGenerateCommitMessage(provider?: string): Promise<number> {
-  const p = provider ?? resolveDefaultProvider();
-  return api.aiGenerateCommitMessage(p);
-}
-
-export async function aiAnalyzeCode(
-  content: string,
-  question: string,
-  provider?: string,
-): Promise<number> {
-  const p = provider ?? resolveDefaultProvider();
-  return api.aiAnalyzeCode(p, content, question);
-}
-
-export async function aiGeneratePrDescription(provider?: string): Promise<number> {
-  const p = provider ?? resolveDefaultProvider();
-  return api.aiGeneratePrDescription(p);
-}
-
-export async function aiReviewCode(diff: string, provider?: string): Promise<number> {
-  const p = provider ?? resolveDefaultProvider();
-  return api.aiReviewCode(p, diff);
-}
-
-export async function aiReviewPr(diff: string, provider?: string): Promise<number> {
-  const p = provider ?? resolveDefaultProvider();
-  return api.aiReviewPr(p, diff);
-}
-
-// ─── Interactive Launch ───
-
-export async function aiLaunchInteractive(provider?: string): Promise<number> {
-  const p = provider ?? resolveDefaultProvider();
-  return api.aiLaunchInteractive(p);
-}
-
-export async function aiLaunchWorktree(
-  provider?: string,
-  name?: string,
-): Promise<number | null> {
-  const p = provider ?? resolveDefaultProvider();
-  return api.aiLaunchWorktree(p, name);
-}
-
-// ─── Introspection (re-export from API) ───
-
-export const aiListWorktrees = api.aiListWorktrees;
-export const aiCleanupWorktree = api.aiCleanupWorktree;
-export const aiGetConfigFiles = api.aiGetConfigFiles;
-
-// ─── Helpers ───
-
-function resolveDefaultProvider(): string {
+/**
+ * Resolve which provider a headless action should use.
+ *
+ * Waits for the persisted preference to land before falling back to
+ * "auto", so picking the API provider can never be silently overridden by
+ * an installed `codex` / `claude` binary during the startup window.
+ */
+export async function resolveProvider(): Promise<AiProviderKind> {
+  await ensureProviderState();
   const providers = get(aiProviders);
   if (providers.length === 0) {
     throw new Error("No AI provider detected");
@@ -217,3 +256,53 @@ function resolveDefaultProvider(): string {
   }
   return providers[0].kind;
 }
+
+export async function aiGenerateCommitMessage(provider?: string): Promise<number> {
+  const p = provider ?? (await resolveProvider());
+  return api.aiGenerateCommitMessage(p);
+}
+
+export async function aiAnalyzeCode(
+  content: string,
+  question: string,
+  provider?: string,
+): Promise<number> {
+  const p = provider ?? (await resolveProvider());
+  return api.aiAnalyzeCode(p, content, question);
+}
+
+export async function aiGeneratePrDescription(provider?: string): Promise<number> {
+  const p = provider ?? (await resolveProvider());
+  return api.aiGeneratePrDescription(p);
+}
+
+export async function aiReviewCode(diff: string, provider?: string): Promise<number> {
+  const p = provider ?? (await resolveProvider());
+  return api.aiReviewCode(p, diff);
+}
+
+export async function aiReviewPr(diff: string, provider?: string): Promise<number> {
+  const p = provider ?? (await resolveProvider());
+  return api.aiReviewPr(p, diff);
+}
+
+// ─── Interactive Launch ───
+
+export async function aiLaunchInteractive(provider?: string): Promise<number> {
+  const p = provider ?? (await resolveProvider());
+  return api.aiLaunchInteractive(p);
+}
+
+export async function aiLaunchWorktree(
+  provider?: string,
+  name?: string,
+): Promise<number | null> {
+  const p = provider ?? (await resolveProvider());
+  return api.aiLaunchWorktree(p, name);
+}
+
+// ─── Introspection (re-export from API) ───
+
+export const aiListWorktrees = api.aiListWorktrees;
+export const aiCleanupWorktree = api.aiCleanupWorktree;
+export const aiGetConfigFiles = api.aiGetConfigFiles;

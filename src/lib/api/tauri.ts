@@ -1535,6 +1535,22 @@ export async function aiTestOpenaiEndpoint(): Promise<OpenAiTestResult> {
   return invoke<OpenAiTestResult>("ai_test_openai_endpoint");
 }
 
+/**
+ * Read the cap on concurrent OpenAI-compatible HTTP requests. Always at
+ * least 1 — the backend clamps a persisted 0 so requests can't deadlock.
+ */
+export async function aiGetApiConcurrency(): Promise<number> {
+  return invoke<number>("ai_get_api_concurrency");
+}
+
+/**
+ * Persist the cap on concurrent OpenAI-compatible HTTP requests. Clamped
+ * to at least 1 by the backend; takes effect on the next headless action.
+ */
+export async function aiSetApiConcurrency(cap: number): Promise<void> {
+  return invoke<void>("ai_set_api_concurrency", { cap });
+}
+
 // ── Reveal in file manager ──────────────────────────────────────────
 
 /**

@@ -274,6 +274,50 @@ pub async fn ai_refresh_detection(
 
 // ─── Headless Actions ─────────────────────────────────────────────────────────
 
+/// Gate capping how many OpenAI-compatible HTTP requests may be in flight.
+///
+/// Headless actions are trivially cheap to fire from several open projects
+/// in a row (someone generating commit messages for five repos), and the
+/// endpoint is usually a single local Ollama box or a rate-limited hosted
+/// API. Rather than let every call hit the endpoint at once — or reject the
+/// surplus — each request takes a semaphore permit and the extras wait for
+/// a free slot. The invoke therefore returns later under load instead of
+/// failing, which is what the frontend's spinner already expects.
+///
+/// The cap is re-read from config on every call, so changing the setting
+/// takes effect immediately. Changing it rebuilds the semaphore: permits
+/// already handed out belong to the old `Arc` and stay valid, so in-flight
+/// requests finish undisturbed while new callers get the new cap.
+#[derive(Debug)]
+struct ApiGate {
+    cap: u32,
+    semaphore: Arc<tokio::sync::Semaphore>,
+}
+
+fn api_gate() -> &'static std::sync::Mutex<ApiGate> {
+    static GATE: std::sync::OnceLock<std::sync::Mutex<ApiGate>> = std::sync::OnceLock::new();
+    GATE.get_or_init(|| {
+        let cap = storage::config::default_ai_api_concurrency_cap();
+        std::sync::Mutex::new(ApiGate {
+            cap,
+            semaphore: Arc::new(tokio::sync::Semaphore::new(cap as usize)),
+        })
+    })
+}
+
+/// Return the semaphore for `cap`, rebuilding it when the configured cap
+/// changed since the last call. `cap` is clamped to at least 1 so a bad
+/// persisted value can never wedge every request behind a zero-permit gate.
+fn api_semaphore(cap: u32) -> Arc<tokio::sync::Semaphore> {
+    let cap = cap.max(1);
+    let mut guard = api_gate().lock().unwrap_or_else(|e| e.into_inner());
+    if guard.cap != cap {
+        guard.cap = cap;
+        guard.semaphore = Arc::new(tokio::sync::Semaphore::new(cap as usize));
+    }
+    guard.semaphore.clone()
+}
+
 /// Shared HTTP client for OpenAI-compatible requests. Built once so the
 /// connection pool persists across headless actions instead of being
 /// torn down per call.
@@ -372,10 +416,16 @@ async fn openai_headless(
     label: &str,
     prompt: String,
 ) -> Result<TaskId, String> {
-    let config = {
+    let (config, cap) = {
         let cfg = state.config.lock().map_err(|e| e.to_string())?;
-        cfg.openai_config.clone()
+        (cfg.openai_config.clone(), cfg.ai_api_concurrency_cap)
     };
+    // Wait for a free slot BEFORE touching the endpoint. Held for the
+    // rest of the function so the permit covers the whole round-trip.
+    let _permit = api_semaphore(cap)
+        .acquire_owned()
+        .await
+        .map_err(|_| "AI API request queue is closed".to_string())?;
     let command = format!(
         "POST {}/chat/completions{}",
         config.base_url.trim_end_matches('/'),
@@ -459,6 +509,26 @@ pub async fn ai_test_openai_endpoint(
             model,
         }),
     }
+}
+
+/// Return the cap on concurrent OpenAI-compatible HTTP requests.
+///
+/// Always at least 1 — a persisted `0` would otherwise wedge every
+/// headless action behind a gate that never opens.
+#[tauri::command]
+pub fn ai_get_api_concurrency(state: State<'_, AppState>) -> Result<u32, String> {
+    let config = state.config.lock().map_err(|e| e.to_string())?;
+    Ok(config.ai_api_concurrency_cap.max(1))
+}
+
+/// Persist the cap on concurrent OpenAI-compatible HTTP requests, clamped
+/// to at least 1. Takes effect on the next headless action — in-flight
+/// requests keep the slot they already hold.
+#[tauri::command]
+pub fn ai_set_api_concurrency(cap: u32, state: State<'_, AppState>) -> Result<(), String> {
+    let mut config = state.config.lock().map_err(|e| e.to_string())?;
+    config.ai_api_concurrency_cap = cap.max(1);
+    config.save(&state.config_path).map_err(|e| e.to_string())
 }
 
 /// Generate a commit message for the current staged diff.

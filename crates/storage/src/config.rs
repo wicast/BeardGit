@@ -34,6 +34,16 @@ fn default_ai_background_concurrency_cap() -> u32 {
     3
 }
 
+/// Default cap on in-flight HTTP requests to the OpenAI-compatible
+/// endpoint. Headless actions (commit message, review, PR description)
+/// are cheap to trigger from several open projects at once, so this
+/// keeps a burst from turning into N parallel completions against a
+/// (usually single-GPU) Ollama box or a rate-limited hosted endpoint.
+/// Requests past the cap queue instead of failing.
+pub fn default_ai_api_concurrency_cap() -> u32 {
+    3
+}
+
 /// Default endpoint for the OpenAI-compatible provider: a local Ollama
 /// server. Users point it at any chat-completions-compatible base URL.
 fn default_openai_base_url() -> String {
@@ -347,6 +357,13 @@ pub struct AppConfig {
     #[serde(default)]
     pub openai_config: OpenAiConfig,
 
+    /// Maximum number of OpenAI-compatible HTTP requests that may be in
+    /// flight at once. Every headless action routed to the `open_ai`
+    /// provider (commit message / review / analysis / PR description)
+    /// takes one slot and queues when the cap is reached. Minimum: 1.
+    #[serde(default = "default_ai_api_concurrency_cap")]
+    pub ai_api_concurrency_cap: u32,
+
     /// Override for where AI background worktrees get created. When `None`,
     /// defaults to `<repo>/.beardgit/ai-worktrees`. Can be absolute or
     /// repo-relative. The coordinator creates parent directories as needed.
@@ -446,6 +463,7 @@ impl Default for AppConfig {
             ai_enabled: default_ai_enabled(),
             preferred_ai_provider: None,
             openai_config: OpenAiConfig::default(),
+            ai_api_concurrency_cap: default_ai_api_concurrency_cap(),
             ai_worktree_root: None,
             ai_background_concurrency_cap: default_ai_background_concurrency_cap(),
             ai_prompt_auto_accept: false,
