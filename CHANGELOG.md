@@ -4,6 +4,11 @@ All notable changes to BeardGit are documented here. Format follows [keepachange
 
 ## [Unreleased]
 
+### Fixed
+
+- **"Reveal in file manager" now opens the file's folder on Windows instead of a bare Explorer window.** The context-menu entry in the Changes list, the commit detail file list, and the editor file tree all pass git's repo-relative paths (forward slashes), which the command joined onto the project root. `PathBuf::join` on Windows only inserts its own separator between the two halves and leaves the rest untouched, so Explorer was handed `/select,C:\repo\src/lib.rs` — a mixed-separator path it cannot resolve for `/select,`. Explorer silently falls back to its default view (Quick access / This PC), which is exactly the "opens Explorer but not the file's location" symptom. The path is now normalised to backslashes before it reaches Explorer. Opening a folder — including the project-folder button in the top-right — was unaffected, because Explorer accepts any separator for plain navigation; macOS (`open -R`) and Linux (`xdg-open`) were unaffected too.
+- **Revealing a file that no longer exists opens its containing folder instead of failing.** The Changes view and commit details list paths that may have been deleted or renamed since — a deleted file, a file from an old commit, the pre-rename side of a rename — and the command aborted with a "path not found" toast whenever the path was gone, even though the folder around it was still there. It now walks up to the closest path that still exists first.
+
 ## [26.7.1] — Off the UI thread, per-tab state isolation, and broader error codes — 2026-07-03
 
 ### Changed

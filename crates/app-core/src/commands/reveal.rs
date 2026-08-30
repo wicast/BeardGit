@@ -23,6 +23,9 @@ use crate::commands::get_active_project_path;
 /// - Files are revealed with selection on macOS (`open -R`) and Windows
 ///   (`explorer /select,`). Linux has no cross-desktop select, so the
 ///   containing directory is opened instead.
+/// - A path that no longer exists degrades to its closest existing
+///   ancestor — the Changes view and commit details list files that may
+///   have been deleted or renamed since.
 #[tauri::command]
 pub fn reveal_in_file_manager(
     path: String,
@@ -35,18 +38,16 @@ pub fn reveal_in_file_manager(
         let root = get_active_project_path(&state)?;
         root.join(raw)
     };
-    if !p.exists() {
-        return Err(format!("path not found: {}", p.display()));
-    }
+    let target = existing_ancestor(&p).ok_or_else(|| format!("path not found: {}", p.display()))?;
 
     #[cfg(target_os = "macos")]
     {
-        let status = if p.is_dir() {
-            std::process::Command::new("open").arg(&p).status()
+        let status = if target.is_dir() {
+            std::process::Command::new("open").arg(&target).status()
         } else {
             std::process::Command::new("open")
                 .arg("-R")
-                .arg(&p)
+                .arg(&target)
                 .status()
         };
         return status.map(|_| ()).map_err(|e| e.to_string());
@@ -56,25 +57,97 @@ pub fn reveal_in_file_manager(
     {
         // explorer.exe returns a non-zero exit code even on success —
         // judge by spawn success only.
-        let status = if p.is_dir() {
-            std::process::Command::new("explorer").arg(&p).spawn()
+        let native = explorer_path(&target);
+        let status = if target.is_dir() {
+            std::process::Command::new("explorer").arg(&native).spawn()
         } else {
-            let arg = format!("/select,{}", p.display());
-            std::process::Command::new("explorer").arg(arg).spawn()
+            std::process::Command::new("explorer")
+                .arg(format!("/select,{}", native))
+                .spawn()
         };
         return status.map(|_| ()).map_err(|e| e.to_string());
     }
 
     #[cfg(target_os = "linux")]
     {
-        let target = if p.is_dir() {
-            p.to_path_buf()
-        } else {
-            p.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| p.to_path_buf())
+        let dir = match target.parent() {
+            Some(parent) if !target.is_dir() => parent.to_path_buf(),
+            _ => target.clone(),
         };
-        let status = std::process::Command::new("xdg-open")
-            .arg(&target)
-            .status();
+        let status = std::process::Command::new("xdg-open").arg(&dir).status();
         return status.map(|_| ()).map_err(|e| e.to_string());
+    }
+}
+
+/// The longest prefix of `path` that still exists on disk, `path` itself
+/// first. Returns `None` when nothing on the path survives.
+///
+/// Paths handed to this command come from git, which reports them with
+/// forward slashes and may describe files that have since been deleted.
+/// Revealing a missing path is not a no-op: `open -R` fails outright and
+/// Explorer silently falls back to its default view.
+fn existing_ancestor(path: &Path) -> Option<PathBuf> {
+    let mut candidate = Some(path);
+    while let Some(current) = candidate {
+        if current.exists() {
+            return Some(current.to_path_buf());
+        }
+        candidate = current.parent();
+    }
+    None
+}
+
+/// Render `path` the way Explorer expects: backslash-separated.
+///
+/// `root.join(relative)` mixes separators — Windows `PathBuf::push` only
+/// inserts `MAIN_SEPARATOR` between the two halves and leaves git's
+/// forward slashes alone — producing `C:\repo\src/lib.rs`. Explorer
+/// accepts that for plain navigation but not for `/select,`: it cannot
+/// resolve the switch's argument and opens its default view (Quick access
+/// / This PC) instead of the file's folder.
+#[cfg(any(target_os = "windows", test))]
+fn explorer_path(path: &Path) -> String {
+    path.to_string_lossy().replace('/', "\\")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explorer_path_uses_backslashes() {
+        assert_eq!(
+            explorer_path(Path::new(r"C:\repo\src/lib.rs")),
+            r"C:\repo\src\lib.rs"
+        );
+        assert_eq!(
+            explorer_path(Path::new("C:/repo/src/lib.rs")),
+            r"C:\repo\src\lib.rs"
+        );
+        assert_eq!(explorer_path(Path::new(r"C:\repo")), r"C:\repo");
+    }
+
+    #[test]
+    fn existing_ancestor_falls_back_to_the_parent_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("gone").join("file.rs");
+        assert_eq!(existing_ancestor(&missing).as_deref(), Some(dir.path()));
+
+        let present = dir.path().join("here.rs");
+        std::fs::write(&present, b"").unwrap();
+        assert_eq!(
+            existing_ancestor(&present).as_deref(),
+            Some(present.as_path())
+        );
+    }
+
+    #[test]
+    fn existing_ancestor_is_none_when_nothing_survives() {
+        // Relative, so it resolves against the test cwd where it — and its
+        // parent — do not exist.
+        assert_eq!(
+            existing_ancestor(Path::new("no-such-dir-here/file.rs")),
+            None
+        );
     }
 }
