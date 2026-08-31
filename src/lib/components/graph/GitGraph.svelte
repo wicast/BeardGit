@@ -1032,6 +1032,7 @@
                 type="button"
                 class="branch-option"
                 class:selected={$graphViewOptions.branch === b.name}
+                class:current={b.is_head}
                 onclick={() => void pickBranchScope(b.name)}
               >{b.name}</button>
             {/each}
@@ -1200,6 +1201,26 @@
   .branch-option.selected {
     color: var(--accent-primary);
     background: color-mix(in srgb, var(--accent-primary) 12%, transparent);
+  }
+
+  /* The branch HEAD currently points to — distinct from the `.selected`
+   * (currently-viewed) branch so the two states never collide: green dot +
+   * green text for the real current branch, copper fill for the one being
+   * graphed. When both apply (viewing the HEAD branch) both show. */
+  .branch-option.current {
+    color: var(--accent-green);
+    font-weight: 600;
+  }
+
+  .branch-option.current::before {
+    content: "";
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    margin-right: 7px;
+    border-radius: 50%;
+    background: var(--accent-green);
+    vertical-align: middle;
   }
 
   .column-dropdown {

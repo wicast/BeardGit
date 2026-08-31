@@ -1627,8 +1627,8 @@ export async function aiGetRepoStatus(): Promise<RepoAiStatus[]> {
   return invoke<RepoAiStatus[]>("ai_get_repo_status");
 }
 
-export async function aiRefreshDetection(): Promise<void> {
-  return invoke<void>("ai_refresh_detection");
+export async function aiRefreshDetection(probeCli?: boolean): Promise<void> {
+  return invoke<void>("ai_refresh_detection", { probeCli: probeCli ?? null });
 }
 
 export async function aiGenerateCommitMessage(provider: string): Promise<TaskId> {

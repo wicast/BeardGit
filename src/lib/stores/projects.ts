@@ -22,7 +22,7 @@ import {
 import { getErrorCode, getErrorMessage } from "../api/errors";
 import { requestOpenInitRepoDialog } from "./initRepoDialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { repoInfo, branches, isLoading, registerWatcher } from "./repo";
+import { repoInfo, isLoading, registerWatcher } from "./repo";
 import {
   checkStatus as checkProviderStatus,
   stopAllPolling,
@@ -38,9 +38,9 @@ import {
 } from "./provider";
 import { refreshStatuses, clearChangesState } from "./changes";
 import { loadProjectSnapshot, saveCurrentSnapshot, restorePersistedViewport } from "./project-cache";
-import { refreshUserEmails, clearGraphState, resetGraphViewScope, viewport } from "./graph";
+import { refreshUserEmails, clearGraphState, resetGraphViewScope, graphViewOptions, reloadGraph, viewport } from "./graph";
 import * as m from "$lib/paraglide/messages";
-import { clearBranchState } from "./branches";
+import { branches, clearBranchState } from "./branches";
 import { createRepoState, dropRepoState, setActiveRepoPath } from "./repo-state";
 import { clearTagState } from "./tags";
 import { clearStashState } from "./stashes";
@@ -409,6 +409,18 @@ async function activateProjectTab(tabIndex: number) {
     ]);
     syncProjectTabs(projects);
     branches.set(branchList);
+
+    // Default the graph to the current branch instead of "all branches".
+    // `resetGraphViewScope` (above) cleared the previous repo's scope; now
+    // that we know this repo's HEAD, scope the walk to it so the graph opens
+    // on the branch the user is actually on. Detached HEAD falls back to all.
+    // We set the scope directly and reload at the *current* offset (rather
+    // than `setGraphViewOptions`, which resets to top) so switching tabs
+    // preserves the scroll position — the manual branch dropdown still
+    // resets to top via `setGraphViewOptions`, which is the expected
+    // behaviour when the user explicitly picks a branch.
+    graphViewOptions.update((o) => ({ ...o, branch: info.head_branch ?? undefined }));
+    void reloadGraph();
 
     // Reset CI state
     ciRuns.set([]);

@@ -172,6 +172,16 @@ pub fn ai_get_repo_status(state: State<'_, AppState>) -> Result<Vec<RepoAiStatus
 /// per candidate — cheap on a warm cache but `--version` can stall for ~1 s
 /// on cold first launches while Claude's V8 spins up.
 ///
+/// API-mode short-circuit: when the persisted preferred provider is the
+/// HTTP-only `open_ai` kind, CLI binaries are never used for any action —
+/// headless work goes through the configured endpoint and interactive /
+/// background entry points are hidden. Probing `codex --version` at
+/// startup would still spawn the binary (visible in the task manager and
+/// as a console flash on Windows npm shims), so the CLI loop is skipped
+/// entirely and only the `open_ai` entry is reported. Callers can force
+/// the full pass with `probe_cli = true` (the Settings page does this —
+/// opening it is an explicit user action).
+///
 /// Runs on the blocking pool via `spawn_blocking` so the IPC thread stays
 /// free and Settings → AI paints the spinner frame without waiting for the
 /// probes. Same pattern as `ai_list_conversations`.
@@ -179,6 +189,7 @@ pub fn ai_get_repo_status(state: State<'_, AppState>) -> Result<Vec<RepoAiStatus
 pub async fn ai_refresh_detection(
     app_handle: AppHandle,
     state: State<'_, AppState>,
+    probe_cli: Option<bool>,
 ) -> Result<(), String> {
     // Master-switch short-circuit: when the AI subsystem is disabled we
     // must not spawn ANY process — the whole point of the switch is that
@@ -186,9 +197,9 @@ pub async fn ai_refresh_detection(
     // for version probes. Clear any previously detected providers so a
     // toggle-off mid-session also empties the UI, then return before the
     // `spawn_blocking` below and before the transcript watcher starts.
-    let ai_enabled = {
+    let (ai_enabled, preferred) = {
         let config = state.config.lock().map_err(|e| e.to_string())?;
-        config.ai_enabled
+        (config.ai_enabled, config.preferred_ai_provider.clone())
     };
     if !ai_enabled {
         let mut guard = state.ai_providers.lock().map_err(|e| e.to_string())?;
@@ -196,43 +207,55 @@ pub async fn ai_refresh_detection(
         return Ok(());
     }
 
-    let detected = tokio::task::spawn_blocking(|| {
-        let kinds = [
-            AiProviderKind::ClaudeCode,
-            AiProviderKind::Codex,
-            AiProviderKind::OpenCode,
-        ];
-        let mut detected: Vec<AvailableAiProvider> = Vec::new();
-        for kind in kinds {
-            // Only ClaudeCode has a real implementation — skip unsupported silently.
-            let Ok(provider) = make_provider(kind) else {
-                continue;
-            };
-            if let Some(binary_path) = provider.detect_binary() {
-                let version = provider.version().ok();
-                detected.push(AvailableAiProvider {
-                    kind,
-                    binary_path,
-                    version,
-                    is_http: false,
-                });
+    // Read the preference here (not via IPC) so the decision can never race
+    // the frontend's async preference load: the persisted config is the
+    // single source of truth for "the user picked the API provider".
+    let probe_cli =
+        probe_cli.unwrap_or_else(|| preferred.as_deref() != Some("open_ai"));
+
+    let open_ai_entry = || AvailableAiProvider {
+        kind: AiProviderKind::OpenAi,
+        binary_path: PathBuf::from("<openai-compatible>"),
+        version: None,
+        is_http: true,
+    };
+
+    let detected = if probe_cli {
+        tokio::task::spawn_blocking(move || {
+            let kinds = [
+                AiProviderKind::ClaudeCode,
+                AiProviderKind::Codex,
+                AiProviderKind::OpenCode,
+            ];
+            let mut detected: Vec<AvailableAiProvider> = Vec::new();
+            for kind in kinds {
+                // Only ClaudeCode has a real implementation — skip unsupported silently.
+                let Ok(provider) = make_provider(kind) else {
+                    continue;
+                };
+                if let Some(binary_path) = provider.detect_binary() {
+                    let version = provider.version().ok();
+                    detected.push(AvailableAiProvider {
+                        kind,
+                        binary_path,
+                        version,
+                        is_http: false,
+                    });
+                }
             }
-        }
-        // The OpenAI-compatible provider has no binary to probe: it is
-        // always "available" while the subsystem is enabled, backed by the
-        // persisted `openai_config` (defaults to a local Ollama server).
-        // Headless actions validate the endpoint at request time and fail
-        // gracefully into the task drawer when it's unreachable.
-        detected.push(AvailableAiProvider {
-            kind: AiProviderKind::OpenAi,
-            binary_path: PathBuf::from("<openai-compatible>"),
-            version: None,
-            is_http: true,
-        });
-        detected
-    })
-    .await
-    .map_err(|e| e.to_string())?;
+            // The OpenAI-compatible provider has no binary to probe: it is
+            // always "available" while the subsystem is enabled, backed by the
+            // persisted `openai_config` (defaults to a local Ollama server).
+            // Headless actions validate the endpoint at request time and fail
+            // gracefully into the task drawer when it's unreachable.
+            detected.push(open_ai_entry());
+            detected
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    } else {
+        vec![open_ai_entry()]
+    };
 
     let mut guard = state.ai_providers.lock().map_err(|e| e.to_string())?;
     *guard = detected;

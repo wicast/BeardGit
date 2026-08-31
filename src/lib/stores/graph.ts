@@ -405,9 +405,14 @@ export function clearGraphState() {
  * Drop the project-specific part of the view mode. Called on project
  * switch: branch names don't carry across repos, while the
  * first-parent toggle is generic and survives.
+ *
+ * The graph now defaults to the *current* branch (HEAD) instead of
+ * "all branches". Pass the new repo's `head_branch` to scope to it;
+ * pass `undefined` (detached HEAD / no active repo) to fall back to
+ * all branches.
  */
-export function resetGraphViewScope() {
-  graphViewOptions.update((o) => (o.branch ? { ...o, branch: undefined } : o));
+export function resetGraphViewScope(headBranch?: string | null) {
+  graphViewOptions.update((o) => ({ ...o, branch: headBranch ?? undefined }));
 }
 
 /** Full reset including viewport (used when no cache is available). */

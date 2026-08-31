@@ -28,7 +28,13 @@ vi.mock("$lib/stores/initRepoDialog", () => ({
 
 import { closeTab } from "../projects";
 import { openTabs, activeTabIndex } from "../tabs";
-import { repoInfo, branches } from "../repo";
+import { repoInfo } from "../repo";
+import { branches } from "../branches";
+import {
+  __resetRepoStateForTests,
+  createRepoState,
+  setActiveRepoPath,
+} from "../repo-state";
 import type { ProjectInfo, RepoInfo, BranchInfo } from "$lib/types";
 
 const project: ProjectInfo = {
@@ -61,6 +67,13 @@ const fakeBranches: BranchInfo[] = [
 
 describe("closeTab — close-to-empty state cleanup", () => {
   beforeEach(() => {
+    __resetRepoStateForTests();
+    // Provision a RepoState for this tab's path and mark it active so the
+    // `branches` facade (activeField) writes to its BranchesSlice — the
+    // legacy `./repo` writable is no longer the source of truth for
+    // branches (see branches-store-wiring.test.ts).
+    createRepoState("/tmp/demo");
+    setActiveRepoPath("/tmp/demo");
     openTabs.set([{ kind: "project", project }]);
     activeTabIndex.set(0);
     repoInfo.set(fakeRepo);

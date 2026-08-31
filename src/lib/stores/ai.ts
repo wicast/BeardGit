@@ -138,12 +138,21 @@ export async function setAiEnabled(enabled: boolean): Promise<void> {
 /**
  * Scan PATH for AI tool binaries and update the store.
  *
+ * By default the backend decides whether to probe CLI binaries at all:
+ * when the persisted preferred provider is the HTTP-only `open_ai` kind
+ * (API mode) it skips the `codex --version` / `claude --version` spawns
+ * entirely, so app startup never launches an agent binary the user chose
+ * not to use. Pass `{ probeCli: true }` to force the full pass — the
+ * Settings page does this because opening it is an explicit user action.
+ *
  * Flips `aiProvidersDetecting` to `true` for the duration so the Settings
  * page can render a spinner per row while the two IPC calls + their
  * subprocess probes complete. Always clears the flag in the `finally`
  * block so a failure doesn't leave the UI stuck.
  */
-export async function detectAiProviders(): Promise<void> {
+export async function detectAiProviders(options?: {
+  probeCli?: boolean;
+}): Promise<void> {
   // Master switch off (or not yet loaded) → never probe. The backend
   // command short-circuits too; this avoids the IPC round-trip entirely.
   if (get(aiEnabled) !== true) {
@@ -152,7 +161,7 @@ export async function detectAiProviders(): Promise<void> {
   }
   aiProvidersDetecting.set(true);
   try {
-    await api.aiRefreshDetection();
+    await api.aiRefreshDetection(options?.probeCli);
     const providers = await api.aiGetProviders();
     aiProviders.set(providers ?? []);
   } finally {

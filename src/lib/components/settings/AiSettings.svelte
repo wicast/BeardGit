@@ -182,7 +182,11 @@
     void (async () => {
       await loadAiEnabled();
       if ($aiEnabled !== false) {
-        void detectAiProviders();
+        // probeCli: opening Settings is an explicit user action — probe
+        // every CLI binary even in API mode so the provider rows show
+        // what's actually installed and the user can switch away from
+        // the open_ai provider.
+        void detectAiProviders({ probeCli: true });
         void loadPreferredProvider();
       }
     })();
