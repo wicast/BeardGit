@@ -29,7 +29,7 @@
   import { remotes, refreshRemotes } from "../../stores/remotes";
   import { openCreateBranchDialog } from "../../stores/createBranchDialog";
   import { openCompare } from "../../stores/compare";
-  import { rebaseBranch, pushRemote, deleteRemoteBranch } from "../../api/tauri";
+  import { rebaseBranch, pullRemote, pushRemote, deleteRemoteBranch } from "../../api/tauri";
   import { runMutation } from "../../api/runMutation";
   import type { BranchInfo } from "../../types";
 
@@ -128,6 +128,7 @@
   let contextBranch = $state("");
   let contextOid = $state("");
   let contextIsRemote = $state(false);
+  let contextIsHead = $state(false);
   let confirmDelete = $state<string | null>(null);
   let forceDelete = $state(false);
   let confirmRebase = $state<string | null>(null);
@@ -194,6 +195,26 @@
   }
 
   /**
+   * Pull `remote/<branch>` into the currently checked-out branch
+   * (`git pull` merges into HEAD). Spawned as a background task; the
+   * watcher sees the moved HEAD ref and refreshes through the usual
+   * `project-mutated` fan-out.
+   */
+  async function doPull(remote: string, branch: string) {
+    try {
+      await runMutation({
+        kind: "pull",
+        invoke: () => pullRemote(remote, branch),
+        successToast: () => `Pulled ${remote}/${branch}`,
+        failureToastPrefix: "Pull failed",
+        trackAsTask: true,
+      });
+    } catch {
+      // runMutation already surfaced the toast.
+    }
+  }
+
+  /**
    * Build the "Push" context-menu item.
    * Single remote → fires directly. Multiple remotes → submenu.
    */
@@ -208,6 +229,28 @@
       children: rs.map((r) => ({
         label: r.name,
         action: () => doPush(r.name, contextBranch, false),
+      })),
+    };
+  }
+
+  /**
+   * Build the "Pull" context-menu item. Only offered on the current
+   * branch — `git pull <remote> <branch>` merges into HEAD, so running
+   * it against a non-checked-out branch would land its changes on the
+   * checked-out one instead. Single remote → fires directly. Multiple
+   * remotes → submenu, mirroring Push.
+   */
+  function pullMenuItem(): MenuItem {
+    const rs = $remotes;
+    if (rs.length === 1) {
+      const r = rs[0].name;
+      return { label: `Pull from ${r}`, action: () => doPull(r, contextBranch) };
+    }
+    return {
+      label: "Pull",
+      children: rs.map((r) => ({
+        label: r.name,
+        action: () => doPull(r.name, contextBranch),
       })),
     };
   }
@@ -230,6 +273,7 @@
 
   let menuItems: MenuItem[] = $derived.by(() => {
     const items: MenuItem[] = [];
+    const parsedRemote = contextIsRemote ? parseRemoteBranch(contextBranch) : null;
     if (!contextIsRemote) {
       items.push({ label: "Checkout", action: () => doCheckout(contextBranch) });
     }
@@ -240,6 +284,14 @@
     });
     if (!contextIsRemote) {
       items.push({ label: "Rename", action: () => openRenameDialog(contextBranch) });
+    }
+    if (parsedRemote) {
+      items.push({
+        // `git pull <remote> <branch>` fetches the remote tip first, so
+        // this is the fresh-ref counterpart of "Merge into current".
+        label: "Pull into current branch",
+        action: () => doPull(parsedRemote.remote, parsedRemote.branch),
+      });
     }
     items.push({ label: "Merge into current", action: () => doMergeBranch(contextBranch) });
     items.push({
@@ -264,18 +316,20 @@
       });
     }
     if (contextIsRemote) {
-      const parsed = parseRemoteBranch(contextBranch);
-      if (parsed) {
+      if (parsedRemote) {
         items.push({
           label: "Delete on remote",
           action: () => {
-            confirmDeleteRemote = { ...parsed, fullPath: contextBranch };
+            confirmDeleteRemote = { ...parsedRemote, fullPath: contextBranch };
           },
         });
       }
     }
     if (!contextIsRemote && $remotes.length > 0) {
       items.push({ separator: true });
+      if (contextIsHead) {
+        items.push(pullMenuItem());
+      }
       items.push(pushMenuItem());
       items.push(forcePushMenuItem());
     }
@@ -288,6 +342,7 @@
     contextBranch = node.fullPath;
     contextOid = node.oid;
     contextIsRemote = node.isRemote;
+    contextIsHead = node.isHead;
     menuX = e.clientX;
     menuY = e.clientY;
     menuVisible = true;
