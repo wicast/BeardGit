@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { getErrorMessage } from "$lib/api/errors";
   import { onMount } from "svelte";
   import {
     submodules,
@@ -21,6 +22,7 @@
   import { Button } from "$lib/components/ui";
   import type { SubmoduleInfo } from "../../types";
   import { shortOid } from "../../utils/git";
+  import { remembered, scoped } from "../../stores/viewMemory";
 
   // Refresh on mount
   onMount(() => {
@@ -40,33 +42,37 @@
     onConfirm: () => void;
   } | null>(null);
 
-  // Add submodule form state
-  let showAddForm = $state(false);
-  let addUrl = $state("");
-  let addPath = $state("");
+  // Add submodule form state — the draft survives a section switch.
+  const showAddForm = remembered(scoped("submodules.showAddForm"), false);
+  const addUrl = remembered(scoped("submodules.addUrl"), "");
+  const addPath = remembered(scoped("submodules.addPath"), "");
   let addError = $state<string | null>(null);
   let adding = $state(false);
 
   async function handleAdd() {
-    if (!addUrl.trim() || !addPath.trim()) return;
+    if (!$addUrl.trim() || !$addPath.trim()) return;
     adding = true;
     addError = null;
     try {
-      await addSubmodule(addUrl.trim(), addPath.trim());
-      showAddForm = false;
-      addUrl = "";
-      addPath = "";
+      // Resolves once the task is accepted, not once the submodule is cloned.
+      // `addError` therefore only ever shows a failure to *start* it; a clone
+      // that fails surfaces as a failed row in the tasks drawer, the same way
+      // a failed clone or push does. The list fills in via the watcher.
+      await addSubmodule($addUrl.trim(), $addPath.trim());
+      $showAddForm = false;
+      $addUrl = "";
+      $addPath = "";
     } catch (err) {
-      addError = String(err);
+      addError = getErrorMessage(err);
     } finally {
       adding = false;
     }
   }
 
   function cancelAdd() {
-    showAddForm = false;
-    addUrl = "";
-    addPath = "";
+    $showAddForm = false;
+    $addUrl = "";
+    $addPath = "";
     addError = null;
   }
 
@@ -105,7 +111,7 @@
       const absPath = await getSubmoduleAbsPath(sub.path);
       await openProjectTab(absPath);
     } catch (err) {
-      alert(String(err));
+      alert(getErrorMessage(err));
     }
   }
 
@@ -128,7 +134,7 @@
           try {
             await initSubmodule(sub.path);
           } catch (err) {
-            alert(m.submodule_init_failed({ error: String(err) }));
+            alert(m.submodule_init_failed({ error: getErrorMessage(err) }));
           }
         },
       });
@@ -153,7 +159,7 @@
               try {
                 await deinitSubmodule(sub.path, false);
               } catch (err) {
-                alert(m.submodule_deinit_failed({ error: String(err) }));
+                alert(m.submodule_deinit_failed({ error: getErrorMessage(err) }));
               }
               confirmProps = null;
             },
@@ -170,7 +176,7 @@
               try {
                 await deinitSubmodule(sub.path, true);
               } catch (err) {
-                alert(m.submodule_deinit_failed({ error: String(err) }));
+                alert(m.submodule_deinit_failed({ error: getErrorMessage(err) }));
               }
               confirmProps = null;
             },
@@ -190,7 +196,7 @@
             try {
               await removeSubmodule(sub.path);
             } catch (err) {
-              alert(m.submodule_remove_failed({ error: String(err) }));
+              alert(m.submodule_remove_failed({ error: getErrorMessage(err) }));
             }
             confirmProps = null;
           },
@@ -237,6 +243,7 @@
   emptyMessage={m.submodule_empty()}
   onDoubleClick={handleDoubleClick}
   onContextMenu={handleContextMenu}
+  memoryKey={scoped("submodules.list")}
 >
   {#snippet headerActions()}
     {#if $submodules.length > 0}
@@ -248,7 +255,7 @@
       variant="primary"
       size="sm"
       onclick={() => {
-        showAddForm = !showAddForm;
+        $showAddForm = !$showAddForm;
       }}
     >
       {m.submodule_add()}
@@ -256,19 +263,19 @@
   {/snippet}
 
   {#snippet afterHeader()}
-    {#if showAddForm}
+    {#if $showAddForm}
       <div class="add-form">
         <input
           type="text"
           class="add-input"
           placeholder={m.submodule_add_url_placeholder()}
-          bind:value={addUrl}
+          bind:value={$addUrl}
         />
         <input
           type="text"
           class="add-input"
           placeholder={m.submodule_add_path_placeholder()}
-          bind:value={addPath}
+          bind:value={$addPath}
         />
         {#if addError}
           <div class="add-error">{addError}</div>
@@ -278,7 +285,7 @@
             variant="primary"
             size="sm"
             onclick={handleAdd}
-            disabled={adding || !addUrl.trim() || !addPath.trim()}
+            disabled={adding || !$addUrl.trim() || !$addPath.trim()}
           >
             {adding ? "Adding..." : m.submodule_add()}
           </Button>
@@ -336,7 +343,7 @@
 
   .add-input {
     background: var(--bg-secondary);
-    border: 1px solid var(--border);
+    border: 1px solid var(--border-strong);
     border-radius: 4px;
     padding: 6px 10px;
     font-size: var(--font-size-sm);

@@ -5,6 +5,7 @@
   import type { MenuItem } from "../common/ContextMenu.svelte";
   import CreateWorktreeDialog from "./CreateWorktreeDialog.svelte";
   import List from "../common/List.svelte";
+  import { scoped } from "$lib/stores/viewMemory";
   import {
     worktrees,
     worktreeLoading,
@@ -171,6 +172,7 @@
   {getKey}
   onRefresh={refreshWorktrees}
   onContextMenu={handleContextMenu}
+  memoryKey={scoped("worktrees.list")}
 >
   {#snippet headerActions()}
     <IconButton

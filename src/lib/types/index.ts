@@ -44,6 +44,8 @@ export interface MergeCurve {
   to_row: number;
   color_index: number;
   group_id: number;
+  /** This edge allocated `to_lane` (merge → parent with no lane yet); bends at the top. */
+  opens_lane: boolean;
 }
 
 /** Options accepted by `getGraphViewport` / `loadGraphChunk`.
@@ -610,6 +612,39 @@ export interface ConfigEntry {
 
 // ── Theme types ──────────────────────────────────────────────────────
 
+/** One theme token whose contrast against the page is below its floor. */
+export interface ContrastWarning {
+  /** The `DerivedColors` field name, e.g. `"text_secondary"`. */
+  token: string;
+  /** The token's resolved color. */
+  foreground: string;
+  /** The page background it was measured against. */
+  background: string;
+  /** Measured WCAG ratio, rounded to two decimals. */
+  ratio: number;
+  /** The floor this token was required to meet. */
+  required: number;
+}
+
+/**
+ * Accessibility report for one theme. Empty `warnings` means it passes.
+ *
+ * Advisory only: user themes are reported, never modified.
+ */
+export interface ThemeContrastReport {
+  theme_id: string;
+  warnings: ContrastWarning[];
+  /**
+   * Tokens whose colour could not be parsed, so no ratio exists.
+   *
+   * `validate_color` accepts `rgba(…)` and the themes README documents it,
+   * so a user following that advice can write an unmeasurable
+   * `text-secondary`. Surfacing these is the difference between "your
+   * theme passes" and "your theme was not checked".
+   */
+  unaudited: string[];
+}
+
 export interface ThemeMeta {
   id: string;
   name: string;
@@ -656,6 +691,8 @@ export interface DerivedColors {
   accent_secondary: string;
   accent_tertiary: string;
   border: string;
+  /** Outline for interactive controls — inputs, selects, buttons. */
+  border_strong: string;
   selection: string;
 }
 
@@ -948,6 +985,12 @@ export interface IssueDetail {
   body: string;
   /** Reuses the existing ForgeComment shape — structurally identical. */
   comments: ForgeComment[];
+  /**
+   * `true` when the comments could not be fetched, so `comments` being empty
+   * is not a statement about the issue. GitLab-only: `glab` fetches notes in
+   * a separate call that can fail on its own. See the Rust `IssueDetail`.
+   */
+  comments_unavailable: boolean;
 }
 
 /** Filter for [`listIssues`]. */
@@ -1312,6 +1355,8 @@ export interface EditorPreferences {
   indent_with_tabs: boolean;
   /** When true, the file tree hides paths matched by `.gitignore`. */
   respect_gitignore_in_tree: boolean;
+  /** When true, the file tree expands to and highlights the active tab's file. */
+  reveal_active_file_in_tree: boolean;
   /** File-size warning threshold in KB. Backend clamps to 1..=2048. */
   large_file_warning_kb: number;
 }

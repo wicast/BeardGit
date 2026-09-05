@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { selectedCiRun, loadingDetail, loadJobLog, retryCiRun, retryCiFailedJobs, cancelCiRun, retryCiJob } from "../../stores/provider";
+  import { getErrorMessage } from "$lib/api/errors";
+  import { selectedCiRun, loadingDetail, loadJobLog, retryCiRun, retryCiFailedJobs, cancelCiRun, retryCiJob, selectedJobId } from "../../stores/provider";
   import type { CiJob } from "../../types";
   import * as m from "$lib/paraglide/messages";
   import { ciStatusColor } from "../../utils/status";
@@ -8,7 +9,8 @@
 
   let { onSelectJob }: { onSelectJob?: (jobId: number) => void } = $props();
 
-  let selectedJobId = $state<number | null>(null);
+  // Job selection is the provider store's `selectedJobId` (set by
+  // `loadJobLog`), so the highlight survives leaving the view.
   let loadingJobId = $state<number | null>(null);
   let busy = $state(false);
   let actionError = $state<string | null>(null);
@@ -17,28 +19,28 @@
     if (!$selectedCiRun || busy) return;
     busy = true; actionError = null;
     try { await retryCiRun($selectedCiRun.run.id); }
-    catch (e) { actionError = m.pipeline_retry_error({ error: String(e) }); }
+    catch (e) { actionError = m.pipeline_retry_error({ error: getErrorMessage(e) }); }
     finally { busy = false; }
   }
   async function doRetryFailed() {
     if (!$selectedCiRun || busy) return;
     busy = true; actionError = null;
     try { await retryCiFailedJobs($selectedCiRun.run.id); }
-    catch (e) { actionError = m.pipeline_retry_error({ error: String(e) }); }
+    catch (e) { actionError = m.pipeline_retry_error({ error: getErrorMessage(e) }); }
     finally { busy = false; }
   }
   async function doCancel() {
     if (!$selectedCiRun || busy) return;
     busy = true; actionError = null;
     try { await cancelCiRun($selectedCiRun.run.id); }
-    catch (e) { actionError = m.pipeline_cancel_error({ error: String(e) }); }
+    catch (e) { actionError = m.pipeline_cancel_error({ error: getErrorMessage(e) }); }
     finally { busy = false; }
   }
   async function doRetryJob(jobId: number) {
     if (busy) return;
     busy = true; actionError = null;
     try { await retryCiJob(jobId); }
-    catch (e) { actionError = m.pipeline_retry_error({ error: String(e) }); }
+    catch (e) { actionError = m.pipeline_retry_error({ error: getErrorMessage(e) }); }
     finally { busy = false; }
   }
 
@@ -83,7 +85,6 @@
   }
 
   async function handleJobClick(job: CiJob) {
-    selectedJobId = job.id;
     loadingJobId = job.id;
     onSelectJob?.(job.id);
     try {
@@ -147,7 +148,7 @@
               <div class="job-row-wrapper">
                 <button
                   class="job-row"
-                  class:selected={selectedJobId === job.id}
+                  class:selected={$selectedJobId === job.id}
                   onclick={() => handleJobClick(job)}
                 >
                   {#if loadingJobId === job.id}
@@ -353,7 +354,7 @@
   .detail-actions { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
   .detail-actions button {
     background: var(--bg-secondary); color: var(--text-primary);
-    border: 1px solid var(--border); border-radius: 4px;
+    border: 1px solid var(--border-strong); border-radius: 4px;
     padding: 4px 10px; font-size: var(--font-size-xs); cursor: pointer;
   }
   .detail-actions button:hover:not(:disabled) { border-color: var(--accent-primary); color: var(--accent-primary); }

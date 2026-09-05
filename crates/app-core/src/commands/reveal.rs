@@ -35,7 +35,7 @@ pub fn reveal_in_file_manager(
     let p: PathBuf = if raw.is_absolute() {
         raw.to_path_buf()
     } else {
-        let root = get_active_project_path(&state)?;
+        let root = get_active_project_path(&state).map_err(|e| e.to_string())?;
         root.join(raw)
     };
     let target = existing_ancestor(&p).ok_or_else(|| format!("path not found: {}", p.display()))?;

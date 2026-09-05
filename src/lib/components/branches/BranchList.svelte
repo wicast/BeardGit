@@ -31,6 +31,7 @@
   import { openCompare } from "../../stores/compare";
   import { rebaseBranch, pullRemote, pushRemote, deleteRemoteBranch } from "../../api/tauri";
   import { runMutation } from "../../api/runMutation";
+  import { remembered, scoped } from "../../stores/viewMemory";
   import type { BranchInfo } from "../../types";
 
   /**
@@ -85,15 +86,17 @@
     return root;
   }
 
-  let filterInput = $state("");
-  let filterValue = $state("");
+  // Survives a section switch; the applied value is seeded from it so a
+  // remount filters immediately instead of waiting for a keystroke.
+  const filterInput = remembered(scoped("branches.filter"), "");
+  let filterValue = $state($filterInput);
 
   const applyFilter = debounce((value: string) => {
     filterValue = value;
   }, 150);
 
   function onFilterInput(value: string) {
-    filterInput = value;
+    $filterInput = value;
     applyFilter(value);
   }
 
@@ -118,8 +121,8 @@
   let localTree = $derived(buildTree(filteredLocal));
   let remoteTree = $derived(buildTree(filteredRemote));
 
-  let localCollapsed = $state(false);
-  let remoteCollapsed = $state(false);
+  const localCollapsed = remembered(scoped("branches.localCollapsed"), false);
+  const remoteCollapsed = remembered(scoped("branches.remoteCollapsed"), false);
 
   // Context menu state
   let menuVisible = $state(false);
@@ -349,7 +352,7 @@
   }
 
   function handleRefresh() {
-    filterInput = "";
+    $filterInput = "";
     filterValue = "";
     refreshBranches();
   }
@@ -373,6 +376,7 @@
   title="BRANCHES"
   selectedKey={$selectedBranchName}
   {getKey}
+  memoryKey={scoped("branches.list")}
 >
   {#snippet headerActions()}
     <IconButton
@@ -401,7 +405,7 @@
         type="text"
         class="filter-input"
         placeholder="Filter branches…"
-        value={filterInput}
+        value={$filterInput}
         oninput={(e) => onFilterInput(e.currentTarget.value)}
         data-testid="branch-filter"
       />
@@ -415,17 +419,17 @@
       class="section-header"
       role="button"
       tabindex="0"
-      onclick={() => (localCollapsed = !localCollapsed)}
+      onclick={() => ($localCollapsed = !$localCollapsed)}
       onkeydown={(e) => {
-        if (e.key === "Enter" || e.key === " ") localCollapsed = !localCollapsed;
+        if (e.key === "Enter" || e.key === " ") $localCollapsed = !$localCollapsed;
       }}
     >
-      <span class="section-chevron nf" class:collapsed={localCollapsed}>{""}</span>
+      <span class="section-chevron nf" class:collapsed={$localCollapsed}>{""}</span>
       <span class="section-label">LOCAL</span>
       <span class="section-count">{$localBranches.length}</span>
     </div>
 
-    {#if !localCollapsed}
+    {#if !$localCollapsed}
       {#if $branchesLoading && $branches.length === 0}
         <Skeleton rows={6} />
       {:else if localTree.length === 0}
@@ -449,17 +453,17 @@
       class="section-header"
       role="button"
       tabindex="0"
-      onclick={() => (remoteCollapsed = !remoteCollapsed)}
+      onclick={() => ($remoteCollapsed = !$remoteCollapsed)}
       onkeydown={(e) => {
-        if (e.key === "Enter" || e.key === " ") remoteCollapsed = !remoteCollapsed;
+        if (e.key === "Enter" || e.key === " ") $remoteCollapsed = !$remoteCollapsed;
       }}
     >
-      <span class="section-chevron nf" class:collapsed={remoteCollapsed}>{""}</span>
+      <span class="section-chevron nf" class:collapsed={$remoteCollapsed}>{""}</span>
       <span class="section-label">REMOTE</span>
       <span class="section-count">{$remoteBranches.length}</span>
     </div>
 
-    {#if !remoteCollapsed}
+    {#if !$remoteCollapsed}
       {#if remoteTree.length === 0}
         <EmptyState title={m.branches_no_remote()} />
       {:else}
@@ -598,7 +602,7 @@
     padding: 4px 8px;
     font-size: var(--font-size-sm);
     background: var(--bg-primary);
-    border: 1px solid var(--border);
+    border: 1px solid var(--border-strong);
     border-radius: 4px;
     color: var(--text-primary);
     box-sizing: border-box;

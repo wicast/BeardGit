@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { getErrorMessage } from "$lib/api/errors";
   import { onMount, onDestroy } from "svelte";
   import {
     bisectState,
@@ -18,10 +19,12 @@
   import { IconButton, Button } from "$lib/components/ui";
   import * as m from "$lib/paraglide/messages";
   import AutoBisectDialog from "./AutoBisectDialog.svelte";
+  import { remembered, scoped } from "../../stores/viewMemory";
 
-  let badCommit = $state("");
-  let goodCommit = $state("");
-  let lastResult = $state("");
+  // Start-form draft and the last bisect message survive a section switch.
+  const badCommit = remembered(scoped("bisect.badCommit"), "");
+  const goodCommit = remembered(scoped("bisect.goodCommit"), "");
+  const lastResult = remembered(scoped("bisect.lastResult"), "");
   let showAutoDialog = $state(false);
   let logEl: HTMLPreElement | undefined = $state();
 
@@ -35,57 +38,57 @@
 
   async function handleStart() {
     try {
-      lastResult = await startBisect(
-        badCommit.trim() || undefined,
-        goodCommit.trim() || undefined,
+      $lastResult = await startBisect(
+        $badCommit.trim() || undefined,
+        $goodCommit.trim() || undefined,
       );
-      badCommit = "";
-      goodCommit = "";
+      $badCommit = "";
+      $goodCommit = "";
     } catch (e) {
-      addToast({ message: String(e), type: "error" });
+      addToast({ message: getErrorMessage(e), type: "error" });
     }
   }
 
   async function handleGood() {
     try {
-      lastResult = await markGood();
+      $lastResult = await markGood();
     } catch (e) {
-      addToast({ message: String(e), type: "error" });
+      addToast({ message: getErrorMessage(e), type: "error" });
     }
   }
 
   async function handleBad() {
     try {
-      lastResult = await markBad();
+      $lastResult = await markBad();
     } catch (e) {
-      addToast({ message: String(e), type: "error" });
+      addToast({ message: getErrorMessage(e), type: "error" });
     }
   }
 
   async function handleSkip() {
     try {
-      lastResult = await skipCommit();
+      $lastResult = await skipCommit();
     } catch (e) {
-      addToast({ message: String(e), type: "error" });
+      addToast({ message: getErrorMessage(e), type: "error" });
     }
   }
 
   async function handleReset() {
     try {
-      lastResult = "";
+      $lastResult = "";
       await resetBisect();
     } catch (e) {
-      addToast({ message: String(e), type: "error" });
+      addToast({ message: getErrorMessage(e), type: "error" });
     }
   }
 
   async function handleAutoRun(testCommand: string) {
     showAutoDialog = false;
-    lastResult = "";
+    $lastResult = "";
     try {
       await runAutoBisect(testCommand);
     } catch (e) {
-      addToast({ message: String(e), type: "error" });
+      addToast({ message: getErrorMessage(e), type: "error" });
     }
   }
 
@@ -93,7 +96,7 @@
     try {
       await cancelAutoBisect();
     } catch (e) {
-      addToast({ message: String(e), type: "error" });
+      addToast({ message: getErrorMessage(e), type: "error" });
     }
   }
 
@@ -129,7 +132,7 @@
               class="form-input"
               type="text"
               placeholder="HEAD"
-              bind:value={badCommit}
+              bind:value={$badCommit}
               data-testid="bisect-bad-input"
             />
           </div>
@@ -140,7 +143,7 @@
               class="form-input"
               type="text"
               placeholder="SHA / ref"
-              bind:value={goodCommit}
+              bind:value={$goodCommit}
               data-testid="bisect-good-input"
             />
           </div>
@@ -214,9 +217,9 @@
           {/if}
         </div>
 
-        {#if lastResult}
+        {#if $lastResult}
           <div class="result-card">
-            <pre class="result-text">{lastResult}</pre>
+            <pre class="result-text">{$lastResult}</pre>
           </div>
         {/if}
       </div>
@@ -317,7 +320,7 @@
 
   .form-input {
     padding: 6px 10px;
-    border: 1px solid var(--border);
+    border: 1px solid var(--border-strong);
     border-radius: 6px;
     background: var(--bg-primary);
     color: var(--text-primary);

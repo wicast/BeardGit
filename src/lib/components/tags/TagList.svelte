@@ -22,11 +22,14 @@
   import { formatRelativeTime } from "../../utils/time";
   import { debounce } from "../../utils/debounce";
   import type { TagInfo } from "../../types";
+  import { scoped } from "$lib/stores/viewMemory";
 
   let loadingMore = $state(false);
   let showCreateDialog = $state(false);
   let confirmDelete = $state<string | null>(null);
-  let filterValue = $state("");
+  // Seeded from the store: the filter outlives this component, and an
+  // empty input over a filtered list read as the app losing the filter.
+  let filterValue = $state($tagFilter);
   let searchingBackend = $state(false);
 
   const debouncedBackendSearch = debounce(async (value: string) => {
@@ -81,6 +84,7 @@
   {getKey}
   emptyMessage={m.tags_empty()}
   onSelect={handleSelect}
+  memoryKey={scoped("tags.list")}
 >
   {#snippet headerActions()}
     <Button variant="primary" size="sm" onclick={() => (showCreateDialog = true)}>
@@ -137,7 +141,14 @@
             <Button
               variant="primary"
               size="sm"
-              onclick={(e: MouseEvent) => { e.stopPropagation(); doPushTag(item.name, "origin"); }}
+              onclick={async (e: MouseEvent) => {
+                e.stopPropagation();
+                try {
+                  await doPushTag(item.name, "origin");
+                } catch {
+                  // runMutation already surfaced the failure toast.
+                }
+              }}
             >{m.tags_action_push()}</Button>
             <Button
               variant="danger"
@@ -159,7 +170,17 @@
         </Button>
       {/if}
 
-      <Button variant="primary" size="sm" onclick={() => doPushTag(null, "origin")}>
+      <Button
+        variant="primary"
+        size="sm"
+        onclick={async () => {
+          try {
+            await doPushTag(null, "origin");
+          } catch {
+            // runMutation already surfaced the failure toast.
+          }
+        }}
+      >
         {m.tags_push_all_button()}
       </Button>
     </div>

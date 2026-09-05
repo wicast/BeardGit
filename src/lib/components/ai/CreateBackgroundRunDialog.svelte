@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { getErrorMessage } from "$lib/api/errors";
   import { onMount } from "svelte";
   import * as m from "$lib/paraglide/messages";
   import Button from "$lib/components/ui/Button.svelte";
@@ -105,7 +106,7 @@
       await startAiBackgroundRun(request);
       onClose();
     } catch (e) {
-      error = String(e);
+      error = getErrorMessage(e);
     } finally {
       submitting = false;
     }
@@ -345,7 +346,7 @@
     height: 30px;
     padding: 6px 10px;
     background: var(--bg-primary);
-    border: 1px solid var(--border);
+    border: 1px solid var(--border-strong);
     border-radius: 6px;
     color: var(--text-primary);
     font-size: var(--font-size-sm);
@@ -415,7 +416,7 @@
     min-height: 140px;
     padding: 8px 10px;
     background: var(--bg-primary);
-    border: 1px solid var(--border);
+    border: 1px solid var(--border-strong);
     border-radius: 6px;
     color: var(--text-primary);
     font-size: var(--font-size-sm);

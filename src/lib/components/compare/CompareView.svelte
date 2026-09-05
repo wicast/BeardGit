@@ -183,7 +183,10 @@
         {#if $compareFiles.length === 0}
           <p class="empty-section">{m.compare_no_files()}</p>
         {:else}
-          <FileChangeList files={$compareFiles} onSelect={(p) => openCompareFileDiff(p)} />
+          <FileChangeList
+            files={$compareFiles}
+            onSelect={(p) => openCompareFileDiff(p)}
+          />
         {/if}
       </section>
     </div>
@@ -201,7 +204,6 @@
             newContent={$compareOpenDiff.newContent}
             filename={$compareOpenDiff.filename}
             placeholder={$compareOpenDiff.placeholder}
-            editorTheme={$activeTheme?.editor}
             isDark={$activeTheme?.meta.mode !== "light"}
             onClose={closeCompareFileDiff}
           >
@@ -257,6 +259,7 @@
     font-size: var(--font-size-sm);
     cursor: pointer;
   }
+  /* Divider *between* segments, not the group's outline. */
   .mode-btn + .mode-btn {
     border-left: 1px solid var(--border);
   }

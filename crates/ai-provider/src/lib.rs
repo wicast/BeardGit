@@ -13,6 +13,7 @@
 //! infrequently (startup, tab switch) and are fast local operations.
 
 pub mod error;
+pub mod prompts;
 pub mod types;
 
 #[cfg(any(test, feature = "mock"))]
@@ -115,6 +116,11 @@ pub trait AiProvider: Send + Sync {
     ) -> Result<Command, AiError>;
 
     // ─── 4. Specialized Actions ───
+    //
+    // The prompt text lives in [`prompts`]. These helpers embed it in argv;
+    // `app-core` bypasses them for providers that read prompts from stdin
+    // (see [`background_uses_stdin_prompt`](Self::background_uses_stdin_prompt))
+    // because a large diff does not fit in a single argument.
 
     /// Build a command to generate a commit message from a diff.
     fn build_commit_message_cmd(&self, diff: &str, cwd: &Path) -> Result<Command, AiError> {
@@ -163,8 +169,10 @@ pub trait AiProvider: Send + Sync {
         Err(AiError::NotSupported)
     }
 
-    /// Whether [`launch_background`](Self::launch_background) should pipe the
-    /// prompt on stdin (`true`) instead of passing it as a CLI flag (`false`).
+    /// Whether headless runs should pipe the prompt on stdin (`true`) instead
+    /// of passing it as a CLI argument (`false`). Applies to both
+    /// [`launch_background`](Self::launch_background) and the specialized
+    /// actions above when built with `ExecuteOptions::prompt_on_stdin`.
     ///
     /// Default: `false` — most providers accept `--prompt` / `-p`. Claude Code
     /// overrides to `true` because `--print <prompt>` truncates long strings.
