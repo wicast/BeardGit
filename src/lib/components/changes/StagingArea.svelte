@@ -7,6 +7,7 @@
   import type { UnlistenFn } from "@tauri-apps/api/event";
   import * as m from "$lib/paraglide/messages";
   import { getHeadMessage, createWorkingTreePatch, savePatchToFile, pushRemote, saveAiReview, getSigningConfig, getTasks, getTaskOutput } from "$lib/api/tauri";
+  import { getErrorMessage } from "$lib/api/errors";
   import type { SigningStatus, TaskInfo } from "$lib/types";
   import { formatSigningBackend } from "$lib/utils/signing";
   import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -171,7 +172,7 @@
       await savePatchToFile(filePath, patchText);
       showPatchDialog = false;
     } catch (err) {
-      alert(m.patch_create_failed({ error: String(err) }));
+      alert(m.patch_create_failed({ error: getErrorMessage(err) }));
     }
   }
 
@@ -207,7 +208,7 @@
       // working tree. Pairs with the disabled-when-no-staged button.
       diff = await createWorkingTreePatch(true);
     } catch (err) {
-      const msg = String(err);
+      const msg = getErrorMessage(err);
       if (msg.includes("No changes to create patch from")) {
         addToast({ message: m.ai_no_changes_to_review(), type: "warning" });
       } else {
@@ -224,7 +225,7 @@
     try {
       taskId = await aiReviewCode(diff);
     } catch (err) {
-      addToast({ type: "error", message: m.ai_review_save_failed({ message: String(err) }) });
+      addToast({ type: "error", message: m.ai_review_save_failed({ message: getErrorMessage(err) }) });
       return;
     }
 
@@ -318,7 +319,7 @@
     } catch (err) {
       addToast({
         type: "error",
-        message: m.ai_review_save_failed({ message: String(err) }),
+        message: m.ai_review_save_failed({ message: getErrorMessage(err) }),
       });
     }
   }

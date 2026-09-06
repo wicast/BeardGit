@@ -20,6 +20,7 @@
   import { IconButton, Button, Skeleton } from "$lib/components/ui";
   import EmptyState from "../common/EmptyState.svelte";
   import FileChangeList from "../common/FileChangeList.svelte";
+  import { scoped } from "$lib/stores/viewMemory";
   import DiffEditor from "../editor/DiffEditor.svelte";
   import ResizableDiffPanel from "../editor/ResizableDiffPanel.svelte";
   import RefPicker, { type RefOption } from "./RefPicker.svelte";
@@ -186,6 +187,7 @@
           <FileChangeList
             files={$compareFiles}
             onSelect={(p) => openCompareFileDiff(p)}
+            memoryKey={scoped("compare.files")}
           />
         {/if}
       </section>

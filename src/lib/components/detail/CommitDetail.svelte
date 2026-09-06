@@ -9,17 +9,17 @@
 
 <script lang="ts">
   import type { CommitInfo, CommitFileChange, CommitSignature } from "../../types";
-  import { getCommitSignature, verifyCommitSignature } from "$lib/api/tauri";
+  import { getCommitSignature, verifyCommitSignature, revealInFileManager } from "$lib/api/tauri";
+  import { getErrorMessage } from "$lib/api/errors";
   import { formatSigningBackend, signatureChipState } from "$lib/utils/signing";
   import * as m from "$lib/paraglide/messages";
-import { addToast } from "$lib/stores/toast";
+  import { addToast } from "$lib/stores/toast";
   import FileChangeList from "../common/FileChangeList.svelte";
-  import { revealInFileManager } from "$lib/api/tauri";
+  import { scoped } from "$lib/stores/viewMemory";
   import ContextMenu from "../common/ContextMenu.svelte";
   import type { MenuItem } from "../common/ContextMenu.svelte";
   import Xrefs from "../common/Xrefs.svelte";
   import { IconButton, Button } from "$lib/components/ui";
-  import { hashString as _hashString } from "$lib/utils/ref-colors";
   import { openBlame, blameActiveTab } from "$lib/stores/blame";
   import { activeViewStore } from "$lib/stores/navigation";
   import { openTab as openEditorTab } from "$lib/stores/fileEditor";
@@ -135,7 +135,7 @@ import { addToast } from "$lib/stores/toast";
       label: m.context_reveal_in_file_manager(),
       action: () =>
         void revealInFileManager(path).catch((err) =>
-          addToast({ type: "error", message: String(err) }),
+          addToast({ type: "error", message: getErrorMessage(err) }),
         ),
     });
     if (showOpenInEditor) {
@@ -162,28 +162,21 @@ import { addToast } from "$lib/stores/toast";
     return ref;
   }
 
-  const REF_COLORS = [
-    { color: 'var(--accent-primary)', rgb: '88, 166, 255' },
-    { color: 'var(--accent-green)', rgb: '63, 185, 80' },
-    { color: 'var(--accent-orange)', rgb: '240, 136, 62' },
-    { color: 'var(--accent-purple)', rgb: '188, 140, 255' },
-    { color: 'var(--accent-red)', rgb: '248, 81, 73' },
-  ];
-
-  /** Delegates to the shared ref-colors utility for consistent hashing. */
-  const hashString = _hashString;
-
-  function refColorIndex(ref: string): number {
-    if (ref === "HEAD") return -1;
-    return hashString(formatRef(ref)) % REF_COLORS.length;
+  /**
+   * Badge colour by ref kind — the same `--graph-ref-*` tokens the theme
+   * feeds the canvas graph, so a ref looks the same here and in the graph.
+   * (It used to hash the name over a 5-colour palette while the graph
+   * hashed it over the lane palette: one branch, two colours.)
+   */
+  function refToken(ref: string): string {
+    if (ref === "HEAD") return "var(--graph-ref-head)";
+    if (ref.startsWith("refs/remotes/")) return "var(--graph-ref-remote)";
+    if (ref.startsWith("refs/tags/")) return "var(--graph-ref-tag)";
+    return "var(--graph-ref-branch)";
   }
 
   function refStyle(ref: string): string {
-    if (ref === "HEAD") {
-      return 'color: var(--accent-purple); background: color-mix(in srgb, var(--accent-purple) 12%, transparent); border: 1px solid color-mix(in srgb, var(--accent-purple) 30%, transparent)';
-    }
-    const idx = refColorIndex(ref);
-    const { color } = REF_COLORS[idx];
+    const color = refToken(ref);
     /* beardgit:allow-hex: inline style using theme-token color vars via color-mix */
     return `color: ${color}; background: color-mix(in srgb, ${color} 12%, transparent); border: 1px solid color-mix(in srgb, ${color} 30%, transparent)`;
   }
@@ -287,7 +280,17 @@ import { addToast } from "$lib/stores/toast";
     {#if files.length > 0}
       <div class="detail-section">
         <div class="detail-label">{m.commit_detail_files({ count: String(files.length) })}</div>
-        <FileChangeList files={files} onSelect={handleFileSelect} onContextMenu={openFileContextMenu} treeToggle />
+        <!-- `memoryKey` is read once per mount, so remount per commit: the
+             same pane shows one commit after another without unmounting. -->
+        {#key commit.oid}
+          <FileChangeList
+            files={files}
+            onSelect={handleFileSelect}
+            onContextMenu={openFileContextMenu}
+            memoryKey={scoped(`commitDetail.files.${commit.oid}`)}
+            treeToggle
+          />
+        {/key}
       </div>
     {/if}
   </div>

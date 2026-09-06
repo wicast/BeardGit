@@ -10,9 +10,10 @@
   import { unstagedSelection, stagedSelection } from "$lib/stores/changesSelection";
   import { cleanPaths, discardFiles, revealInFileManager } from "$lib/api/tauri";
   import { addGitignorePattern } from "$lib/api/tauri";
+  import { getErrorMessage } from "$lib/api/errors";
   import { runMutation } from "$lib/api/runMutation";
-import { addToast } from "$lib/stores/toast";
-  import { Button, Checkbox } from "$lib/components/ui";
+  import { addToast } from "$lib/stores/toast";
+  import { Button, Checkbox, IconButton } from "$lib/components/ui";
   import { activeViewStore } from "$lib/stores/navigation";
   import { openTab as openEditorTab } from "$lib/stores/fileEditor";
   import { isBatchSelection, batchActionIds, type BatchActionId } from "./changes-menu";
@@ -25,7 +26,15 @@ import { addToast } from "$lib/stores/toast";
     toggleDirSelection,
     type ChangesTreeNode,
   } from "./changes-tree";
-  import { changesTreeView, setChangesTreeView } from "$lib/stores/changesView";
+  import { changesTreeView } from "$lib/stores/changesView";
+  import { get } from "svelte/store";
+  import { remembered, scoped } from "$lib/stores/viewMemory";
+  import {
+    computeVirtualWindow,
+    findScroller,
+    measureAgainstScroller,
+    virtualRowStyle,
+  } from "../../utils/virtualWindow";
 
   let {
     files,
@@ -65,6 +74,19 @@ import { addToast } from "$lib/stores/toast";
   let showDiscardSelectedConfirm = $state(false);
   let discardSelectedPaths = $state<string[]>([]);
 
+  // Checkbox selection is backed by a store so it PERSISTS across leaving
+  // and re-entering the Changes view (see changesSelection.ts). `isStaged`
+  // is fixed per instance — it just picks which list's store to read/write.
+  let selected = $derived(isStaged ? $stagedSelection : $unstagedSelection);
+
+  function setSelection(next: Set<string>) {
+    (isStaged ? stagedSelection : unstagedSelection).set(next);
+  }
+
+  let selectedCount = $derived(selected.size);
+  let allSelected = $derived(files.length > 0 && selected.size === files.length);
+  let someSelected = $derived(selected.size > 0 && selected.size < files.length);
+
   // ── Tree view ─────────────────────────────────────────────────────
   // Collapsed-directory set is component-local (both list instances keep
   // their own); the flat/tree MODE is the persisted global preference.
@@ -79,7 +101,8 @@ import { addToast } from "$lib/stores/toast";
 
   /** Rows currently on screen. Flat mode = every file at depth 0, so a
    *  single render loop serves both modes and the DOM for a file row is
-   *  identical between them. */
+   *  identical between them — which is also what lets the virtual window
+   *  below be computed over `displayRows` in either mode. */
   let treeRoots = $derived(buildChangesTree(files));
 
   /** Per-directory {changed, selected} tallies, computed in ONE bottom-up
@@ -94,7 +117,8 @@ import { addToast } from "$lib/stores/toast";
     return files.map((f) => ({ node: { kind: "file", path: f.path, name: f.path, payload: f }, depth: 0 }));
   });
 
-  /** Changed-file count beneath a directory (for the folder discard menu). */
+  /** Changed-file count beneath a directory (for the badge and the folder
+   *  discard menu). */
   function dirChangedCount(dirPath: string): number {
     return dirSelCounts.get(dirPath)?.changed ?? 0;
   }
@@ -108,25 +132,94 @@ import { addToast } from "$lib/stores/toast";
     showDiscardSelectedConfirm = true;
   }
 
-  // Checkbox selection is backed by a store so it PERSISTS across leaving
-  // and re-entering the Changes view (see changesSelection.ts). `isStaged`
-  // is fixed per instance — it just picks which list's store to read/write.
-  let selected = $derived(isStaged ? $stagedSelection : $unstagedSelection);
-
-  function setSelection(next: Set<string>) {
-    (isStaged ? stagedSelection : unstagedSelection).set(next);
-  }
-
-  let selectedCount = $derived(selected.size);
-  let allSelected = $derived(files.length > 0 && selected.size === files.length);
-  let someSelected = $derived(selected.size > 0 && selected.size < files.length);
-
   // Keyboard navigation: `focusIndex` is the arrow-key cursor and
   // `anchorIndex` the fixed end of a Shift range. Both are component-local
   // so the cursor starts fresh each visit (unlike the persisted selection).
   let focusIndex = $state(-1);
   let anchorIndex = $state(-1);
   let listEl = $state<HTMLDivElement | null>(null);
+
+  // ── Virtualization ────────────────────────────────────────────────────
+  // This list is the one that can genuinely reach tens of thousands of rows:
+  // `file_statuses` recurses untracked directories, so a `node_modules` that
+  // isn't ignored shows up file by file. Every one of those rows mounts a
+  // Checkbox, a badge and an IconButton, so rendering them all is the
+  // difference between a list and a freeze.
+  //
+  // 28 px is measured, not assumed — `.file-item` is 3px padding plus its
+  // content, and it comes out at exactly 28 with a uniform pitch. The
+  // windowed path is only taken above the 500-row threshold, so every
+  // existing visual baseline (a handful of files) renders through the plain
+  // `{#each}` and is unaffected.
+  const ROW_HEIGHT = 28;
+
+  // The scroll container is NOT this list: `StagingArea` puts both lists
+  // inside one `.file-lists` scroller so staged and unstaged scroll
+  // together. (`.file-list`'s own `overflow-y: auto` never engages, because
+  // its parent grows without bound.) So the window is computed against the
+  // ancestor: how far the scroller has moved *past the top of this list*,
+  // and the scroller's viewport height. Measuring this list instead reports
+  // its full content height and mounts every row — which is exactly what
+  // the first attempt at this did.
+  let scrollTop = $state(0);
+  let viewportHeight = $state(0);
+
+  // The shared scroller's position, remembered across view switches. Both
+  // list instances write the same cell (same scroller), so whichever mounts
+  // with rows first puts it back; done once, after there is content to
+  // scroll — assigning before that clamps to 0 and would overwrite the value.
+  const savedScrollTop = remembered(scoped("changes.scrollTop"), 0);
+  let scrollRestored = false;
+
+  let virtualWindow = $derived(
+    computeVirtualWindow({
+      count: displayRows.length,
+      rowHeight: ROW_HEIGHT,
+      scrollTop,
+      viewportHeight,
+      threshold: 500,
+    }),
+  );
+
+  function measureAgainst(scroller: HTMLElement) {
+    if (!listEl) return;
+    // The list's own offset within the scroller is stable while windowed: the
+    // sizer's height is `count * ROW_HEIGHT`, so the window changing never
+    // moves the list.
+    ({ scrollTop, viewportHeight } = measureAgainstScroller(listEl, scroller));
+  }
+
+  /** Style for one rendered row: windowed rows are absolutely placed at
+   *  their `index * ROW_HEIGHT` slot, and every row is indented by its
+   *  tree depth (depth 0 = the flat list's own 12px left padding). Rows
+   *  share one uniform height in both modes, which is what keeps the
+   *  window math honest. */
+  function rowStyle(index: number, depth: number, positioned: boolean): string {
+    const indent = `padding-left: ${12 + depth * 14}px`;
+    return positioned ? `${virtualRowStyle(index, ROW_HEIGHT)}; ${indent}` : indent;
+  }
+
+  $effect(() => {
+    // Re-runs when the row count changes — file list refreshes, the other
+    // list growing, or a collapse/expand in tree mode: the second list's
+    // offset within the scroller depends on how tall the first one is.
+    void displayRows.length;
+    if (!listEl) return;
+    const scroller = findScroller(listEl);
+    if (!scroller) return;
+
+    if (!scrollRestored && files.length > 0) {
+      scrollRestored = true;
+      scroller.scrollTop = get(savedScrollTop);
+    }
+    measureAgainst(scroller);
+    const onScroll = () => {
+      savedScrollTop.set(scroller.scrollTop);
+      measureAgainst(scroller);
+    };
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+    return () => scroller.removeEventListener("scroll", onScroll);
+  });
 
   function toggleFile(path: string, index = -1) {
     const next = new Set(selected);
@@ -171,7 +264,28 @@ import { addToast } from "$lib/stores/toast";
   function setFocus(index: number) {
     focusIndex = Math.max(0, Math.min(index, displayRows.length - 1));
     const row = listEl?.querySelector<HTMLElement>(`[data-row-index="${focusIndex}"]`);
-    row?.scrollIntoView({ block: "nearest" });
+    if (row) {
+      row.scrollIntoView({ block: "nearest" });
+      return;
+    }
+    // Windowed: the target row isn't mounted, so there is nothing to scroll
+    // into view. Move the scroller to where the row will be, which re-renders
+    // the window around it. Only reached while virtualized, where rows sit a
+    // known ROW_HEIGHT apart.
+    if (!listEl) return;
+    const scroller = findScroller(listEl);
+    if (!scroller) return;
+    const listTop =
+      listEl.getBoundingClientRect().top -
+      scroller.getBoundingClientRect().top +
+      scroller.scrollTop;
+    const top = listTop + focusIndex * ROW_HEIGHT;
+    const bottom = top + ROW_HEIGHT;
+    if (top < scroller.scrollTop) {
+      scroller.scrollTop = top;
+    } else if (bottom > scroller.scrollTop + scroller.clientHeight) {
+      scroller.scrollTop = bottom - scroller.clientHeight;
+    }
   }
 
   function handleRowClick(e: MouseEvent, index: number) {
@@ -328,6 +442,18 @@ import { addToast } from "$lib/stores/toast";
       .filter((i): i is MenuItem => i !== null);
   }
 
+  /**
+   * Switch to the editor view and open the file there.
+   *
+   * Shared by the per-row button and the context-menu item so the two
+   * cannot drift; the menu item stays because discoverability and muscle
+   * memory are different needs.
+   */
+  function openInEditor(filePath: string): void {
+    activeViewStore.set("editor");
+    void openEditorTab(filePath);
+  }
+
   function buildContextMenuItems(filePath: string): MenuItem[] {
     const items: MenuItem[] = [];
     const batch = isBatchSelection(selected, filePath);
@@ -369,7 +495,7 @@ import { addToast } from "$lib/stores/toast";
       label: m.context_reveal_in_file_manager(),
       action: () =>
         void revealInFileManager(filePath).catch((err) =>
-          addToast({ type: "error", message: String(err) }),
+          addToast({ type: "error", message: getErrorMessage(err) }),
         ),
     });
 
@@ -522,7 +648,7 @@ import { addToast } from "$lib/stores/toast";
   /** Context menu for a DIRECTORY row in tree mode. Unstaged lists offer
    *  folder discard (expanded to the currently-changed files beneath the
    *  directory and run through the same guarded `discard_files` call);
-   *  both list kinds can copy the folder path. */
+   *  both list kinds can reveal or copy the folder path. */
   function openDirContextMenu(e: MouseEvent, dirPath: string) {
     e.preventDefault();
     contextMenuFile = null;
@@ -545,7 +671,7 @@ import { addToast } from "$lib/stores/toast";
       label: m.context_reveal_in_file_manager(),
       action: () =>
         void revealInFileManager(dirPath).catch((err) =>
-          addToast({ type: "error", message: String(err) }),
+          addToast({ type: "error", message: getErrorMessage(err) }),
         ),
     });
     items.push({
@@ -594,8 +720,30 @@ import { addToast } from "$lib/stores/toast";
   </div>
   <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-  <div class="file-list" role="list" tabindex="0" bind:this={listEl} onkeydown={handleKeydown}>
-    {#each displayRows as row, i ((row.node.kind === "dir" ? "dir:" : "file:") + row.node.path)}
+  <div
+    class="file-list"
+    role="list"
+    tabindex="0"
+    bind:this={listEl}
+    onkeydown={handleKeydown}
+  >
+    {#if virtualWindow}
+      <!-- Windowed: a tall sizer keeps the scrollbar honest and only the
+           visible slice is mounted, anchored at (index * ROW_HEIGHT). -->
+      <div class="virt-sizer" style="height: {virtualWindow.totalHeight}px">
+        {#each displayRows.slice(virtualWindow.start, virtualWindow.end) as row, offset ((row.node.kind === "dir" ? "dir:" : "file:") + row.node.path)}
+          {@render rowView(row, virtualWindow.start + offset, true)}
+        {/each}
+      </div>
+    {:else}
+      {#each displayRows as row, i ((row.node.kind === "dir" ? "dir:" : "file:") + row.node.path)}
+        {@render rowView(row, i, false)}
+      {/each}
+    {/if}
+  </div>
+</div>
+
+{#snippet rowView(row: { node: ChangesTreeNode; depth: number }, i: number, positioned: boolean)}
       {@const node = row.node}
       {@const stat = node.kind === "file" ? stats?.get(node.path) : undefined}
       <div
@@ -607,7 +755,7 @@ import { addToast } from "$lib/stores/toast";
         data-row-index={i}
         data-row-kind={node.kind}
         data-testid={(node.kind === "dir" ? "dir-row-" : "file-row-") + node.path.replace(/\//g, '-')}
-        style:padding-left="{12 + row.depth * 14}px"
+        style={rowStyle(i, row.depth, positioned)}
         oncontextmenu={(e) =>
           node.kind === "dir" ? openDirContextMenu(e, node.path) : openContextMenu(e, node.path)}
       >
@@ -661,6 +809,17 @@ import { addToast } from "$lib/stores/toast";
               {/if}
             {/if}
           </button>
+          <span class="row-edit">
+            <IconButton
+              icon={"\uF044"}
+              description={m.editor_open_in_editor()}
+              size="sm"
+              onclick={(e: MouseEvent) => {
+                e.stopPropagation();
+                openInEditor(node.path);
+              }}
+            />
+          </span>
           {#if isStaged && onUnstage}
             <span class="item-action" role="button" tabindex="0" onclick={(e) => { e.stopPropagation(); onUnstage([node.path]); }} onkeydown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onUnstage([node.path]); } }}>&#8722;</span>
           {/if}
@@ -669,9 +828,7 @@ import { addToast } from "$lib/stores/toast";
           {/if}
         {/if}
       </div>
-    {/each}
-  </div>
-</div>
+{/snippet}
 
 <ContextMenu
   items={contextMenuDir
@@ -762,6 +919,12 @@ import { addToast } from "$lib/stores/toast";
     overflow-y: auto;
   }
 
+  /* Sizer for the windowed path: holds the full scroll height while only
+     the visible slice is mounted, absolutely positioned inside it. */
+  .virt-sizer {
+    position: relative;
+  }
+
   .file-item {
     display: flex;
     align-items: center;
@@ -794,6 +957,20 @@ import { addToast } from "$lib/stores/toast";
 
   .file-list:focus {
     outline: none;
+  }
+
+  /* Hidden until the row is hovered or holds focus. A per-row action that
+     is always visible turns a file list into a toolbar; keyboard users get
+     it via `:focus-within`, and everyone still has the context menu. */
+  .row-edit {
+    flex-shrink: 0;
+    opacity: 0;
+    transition: opacity 0.12s;
+  }
+
+  .file-item:hover .row-edit,
+  .file-item:focus-within .row-edit {
+    opacity: 1;
   }
 
   .file-btn {

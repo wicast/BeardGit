@@ -1,9 +1,9 @@
 /**
- * Tests for the opt-in tree mode of the shared FileChangeList component
- * (used by CommitDetail / TagDetail / CompareView). Verifies that the
- * flat/tree toggle renders only when `treeToggle` is set, that tree mode
- * groups files into collapsible directory rows, and that file-row clicks
- * still fire `onSelect`.
+ * Tests for the shared FileChangeList component (used by CommitDetail /
+ * TagDetail / CompareView). Verifies the opt-in tree mode (flat/tree toggle
+ * renders only when `treeToggle` is set, tree mode groups files into
+ * collapsible directory rows) and that the flat list keeps the
+ * dimmed-directory + filename split with `onSelect` firing on clicks.
  */
 
 import { describe, expect, it, vi, afterEach } from "vitest";
