@@ -986,10 +986,16 @@
         {#each $openTabs as tab, i}
           {#if tab.kind === "terminal"}
             <div class="terminal-persist" class:visible={i === $activeTabIndex} style:background={$activeTheme?.colors.background}>
-              <LazyComponent
-                loader={() => import("$lib/components/terminal/TerminalView.svelte")}
-                props={{ terminal: tab.terminal }}
-              />
+              <!-- Keyed by sessionId: an unkeyed block would be reused
+                   positionally when an adjacent tab closes, leaving the
+                   view's output listener, PTY resize and focus wired to the
+                   previous session. -->
+              {#key tab.terminal.sessionId}
+                <LazyComponent
+                  loader={() => import("$lib/components/terminal/TerminalView.svelte")}
+                  props={{ terminal: tab.terminal }}
+                />
+              {/key}
             </div>
           {:else if tab.kind === "composite"}
             {#each tab.segments as segment, si (segment.type === "terminal" ? `c${i}-t-${segment.info.sessionId}` : `c${i}-skip-${si}`)}

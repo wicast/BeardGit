@@ -134,11 +134,11 @@ impl TerminalManager {
         for arg in args {
             cmd.arg(arg);
         }
-        for (key, value) in &config.env {
-            if is_dangerous_env_key(key) {
+        for (key, value) in defaulted_terminal_env(&config.env) {
+            if is_dangerous_env_key(&key) {
                 continue;
             }
-            cmd.env(key, value);
+            cmd.env(&key, &value);
         }
 
         let child = pair
@@ -429,6 +429,38 @@ fn is_safe_shell_arg(arg: &str) -> bool {
     )
 }
 
+/// Environment defaults applied to every spawned PTY child.
+///
+/// The child inherits this process's environment (via `CommandBuilder`), and
+/// a GUI process launched from Finder, Spotlight, or an agent/IDE shell
+/// carries a useless or missing `TERM` — commonly `dumb`. zsh then finds no
+/// cursor-forward capability and its line editor redraws by printing literal
+/// spaces: the redraw erases the prompt (the spaces run straight over it),
+/// suggestion text lands at shifted columns, and typing scrambles the line.
+/// This app *is* an xterm-compatible emulator, so the emulator — not
+/// whatever happened to launch us — decides what the child may assume about
+/// its terminal; `dumb` is overridden for the same reason. An explicit
+/// caller-provided `TERM` other than `dumb` is kept verbatim.
+#[cfg(unix)]
+fn defaulted_terminal_env(env: &HashMap<String, String>) -> HashMap<String, String> {
+    let mut env = env.clone();
+    match env.get("TERM").map(String::as_str) {
+        None | Some("") | Some("dumb") => {
+            env.insert("TERM".to_string(), "xterm-256color".to_string());
+        }
+        _ => {}
+    }
+    env.entry("COLORTERM".to_string())
+        .or_insert_with(|| "truecolor".to_string());
+    env
+}
+
+/// Windows has no TERM concept; pass the caller's environment through.
+#[cfg(not(unix))]
+fn defaulted_terminal_env(env: &HashMap<String, String>) -> HashMap<String, String> {
+    env.clone()
+}
+
 /// Environment variables that influence dynamic loaders, command
 /// resolution, or git's transport — none of which should be tweakable
 /// from a webview-originated terminal spawn. The caller still inherits
@@ -710,5 +742,36 @@ mod tests {
         for k in ["HOME", "USER", "TERM", "LANG", "EDITOR"] {
             assert!(!is_dangerous_env_key(k), "should keep {k}");
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn terminal_env_defaults_replace_a_useless_term() {
+        // Missing / empty / dumb TERM — what a GUI process inherits from
+        // Finder or an agent shell — must become the emulator's real
+        // capability set, or zsh's line editor redraws by printing spaces
+        // over the prompt.
+        for inherited in [
+            None,
+            Some(("TERM", "")),
+            Some(("TERM", "dumb")),
+        ] {
+            let mut env = HashMap::new();
+            if let Some((k, v)) = inherited {
+                env.insert(k.to_string(), v.to_string());
+            }
+            let env = defaulted_terminal_env(&env);
+            assert_eq!(env.get("TERM").unwrap(), "xterm-256color");
+            assert_eq!(env.get("COLORTERM").unwrap(), "truecolor");
+        }
+
+        // A caller-supplied real TERM is kept verbatim; COLORTERM still
+        // defaults when absent and is not clobbered when present.
+        let mut env = HashMap::new();
+        env.insert("TERM".to_string(), "xterm-kitty".to_string());
+        env.insert("COLORTERM".to_string(), "24bit".to_string());
+        let env = defaulted_terminal_env(&env);
+        assert_eq!(env.get("TERM").unwrap(), "xterm-kitty");
+        assert_eq!(env.get("COLORTERM").unwrap(), "24bit");
     }
 }

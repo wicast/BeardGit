@@ -2,8 +2,10 @@
  * Pool for interactive xterm.js terminal instances.
  *
  * Mirrors the read-only pool in `pool.ts` but creates terminals with
- * `disableStdin: false` and `cursorBlink: true`. Reuses instances on
- * acquire/release to avoid WebGL context churn and GC pressure.
+ * `disableStdin: false` and `cursorBlink: true`. Only *never-opened* warm
+ * spares are reused — an opened xterm is bound to its DOM for life (see
+ * `releaseInteractive`) — which still avoids most construction cost and
+ * GC pressure without re-opening a bound instance.
  *
  * Max pool size: 3 (2 visible + 1 warm spare).
  */
@@ -63,7 +65,11 @@ function createInstance(): InteractivePooledInstance {
     disableStdin: false,
     cursorBlink: true,
     scrollback: 10000,
-    convertEol: true,
+    // A live PTY already speaks CRLF; rewriting bare LF into CRLF corrupts
+    // the line edits of full-screen programs (zsh ZLE redraws included).
+    // The read-only pool keeps `true` because job-log text arrives with
+    // bare newlines and no terminal driver behind it.
+    convertEol: false,
   });
 
   const fitAddon = new FitAddon();
@@ -106,21 +112,19 @@ export function acquireInteractive(): InteractivePooledInstance {
 }
 
 /**
- * Release an interactive terminal instance back to the pool.
+ * Release an interactive terminal instance.
  *
- * If the warm slot is empty, clears the terminal and keeps it for reuse.
- * Otherwise, disposes the instance to stay within the pool size limit.
+ * An *opened* xterm instance can never be reused: xterm 6's `open()` returns
+ * early on a terminal that already has an element, so a recycled instance
+ * would stay glued to its destroyed container — the next mount renders
+ * nothing, while every `onData`/`onResize` listener from its previous lives
+ * keeps firing against dead sessions. So the opened instance is always
+ * disposed here; the warm spare is only ever a never-opened instance
+ * created by the rAF scheduler in `acquireInteractive`.
  */
 export function releaseInteractive(instance: InteractivePooledInstance): void {
   activeCount--;
-
-  if (!warmInstance) {
-    instance.terminal.clear();
-    instance.terminal.reset();
-    warmInstance = instance;
-  } else {
-    instance.terminal.dispose();
-  }
+  instance.terminal.dispose();
 }
 
 /** Update theme on the warm pooled instance, if any. */

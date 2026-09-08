@@ -48,6 +48,24 @@
     };
   }
 
+  /**
+   * Web fonts load asynchronously: the first `fit()` measures the fallback
+   * font, and xterm never re-measures when the real font swaps in — it has
+   * no `document.fonts` awareness at all. `cols` then disagrees with the
+   * rendered cell width and every shell repaint (zsh's completion plugins
+   * repaint on every keystroke) lands at shifted columns. Refit once the
+   * font situation settles: after the current loading batch finishes, and
+   * once more if another face (e.g. the Nerd Font, fetched only when a
+   * prompt glyph demands it) arrives later.
+   */
+  function connectFontRefit(): () => void {
+    const fonts = document.fonts;
+    const refit = () => requestAnimationFrame(() => fitAddon?.fit());
+    fonts?.ready.then(refit);
+    fonts?.addEventListener("loadingdone", refit, { once: true });
+    return () => fonts?.removeEventListener("loadingdone", refit);
+  }
+
   onMount(() => {
     if (!containerEl) return;
 
@@ -71,6 +89,7 @@
       }
 
       fitAddon.fit();
+      const disconnectFontRefit = connectFontRefit();
 
       if (onData) {
         terminal.onData(onData);
@@ -83,6 +102,7 @@
 
       return () => {
         observer.disconnect();
+        disconnectFontRefit();
         if (terminal && fitAddon) {
           releaseInteractive({ terminal, fitAddon });
           terminal = undefined;
@@ -115,6 +135,7 @@
       }
 
       fitAddon.fit();
+      const disconnectFontRefit = connectFontRefit();
 
       if (onData) {
         terminal.onData(onData);
@@ -127,6 +148,7 @@
 
       return () => {
         observer.disconnect();
+        disconnectFontRefit();
         terminal?.dispose();
       };
     }

@@ -1,10 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Stub requestAnimationFrame for node environment (no-op; warm replacement
-// scheduling is exercised separately via explicit pool state assertions).
+// Capture rAF callbacks so tests can flush the warm-spare scheduler
+// explicitly (node environment never runs frames on its own).
+let rafCallbacks: FrameRequestCallback[] = [];
 vi.stubGlobal(
   'requestAnimationFrame',
-  (_cb: FrameRequestCallback): number => 0,
+  (cb: FrameRequestCallback): number => {
+    rafCallbacks.push(cb);
+    return 0;
+  },
 );
 
 // ── Mock xterm.js and addons ──
@@ -80,6 +84,7 @@ import type { ThemeData } from '../../types';
 describe('interactive terminal pool', () => {
   beforeEach(() => {
     mockTerminalInstances.length = 0;
+    rafCallbacks = [];
     resetInteractivePool();
   });
 
@@ -97,47 +102,55 @@ describe('interactive terminal pool', () => {
     expect(created.options.cursorBlink).toBe(true);
   });
 
-  it('release + acquire returns a recycled instance', () => {
-    const first = acquireInteractive();
-    releaseInteractive(first);
-
-    const second = acquireInteractive();
-    // The recycled terminal should be the same mock object
-    expect(second.terminal).toBe(first.terminal);
-    // clear() and reset() should have been called during release
-    expect(first.terminal.clear).toHaveBeenCalled();
-    expect(first.terminal.reset).toHaveBeenCalled();
+  it('interactive terminals do not rewrite bare LF (a live PTY speaks CRLF)', () => {
+    acquireInteractive();
+    expect(mockTerminalInstances[0].options.convertEol).toBe(false);
   });
 
-  it('pool respects max size (3)', () => {
-    // Acquire 4 instances, release all 4
-    const instances = Array.from({ length: 4 }, () => acquireInteractive());
-    instances.forEach(inst => releaseInteractive(inst));
-
-    // Pool should hold at most 1 warm + discard the rest beyond pool capacity
-    // With 4 released: first becomes warm, rest disposed
-    const stats = getInteractivePoolStats();
-    expect(stats.warmCount).toBeLessThanOrEqual(1);
-    // 3 of the 4 should have been disposed
-    const disposeCount = instances.filter(
-      inst => (inst.terminal.dispose as ReturnType<typeof vi.fn>).mock.calls.length > 0
-    ).length;
-    expect(disposeCount).toBe(3);
-  });
-
-  it('release disposes when pool already has a warm instance', () => {
-    const first = acquireInteractive();
-    const second = acquireInteractive();
-
-    releaseInteractive(first);  // first becomes warm
-    releaseInteractive(second); // second is disposed (warm slot taken)
-
-    expect(second.terminal.dispose).toHaveBeenCalled();
-  });
-
-  it('updateInteractivePoolTheme updates warm instance theme', () => {
+  it('release always disposes the opened instance — an opened xterm can never re-open', () => {
     const inst = acquireInteractive();
     releaseInteractive(inst);
+    expect(inst.terminal.dispose).toHaveBeenCalledTimes(1);
+    // Disposing must not be smuggled through the warm slot either.
+    expect(getInteractivePoolStats()).toEqual({ activeCount: 0, warmCount: 0 });
+  });
+
+  it('acquire after release returns a fresh instance, not the disposed one', () => {
+    const first = acquireInteractive();
+    releaseInteractive(first);
+    const second = acquireInteractive();
+    expect(second.terminal).not.toBe(first.terminal);
+    expect(first.terminal.dispose).toHaveBeenCalled();
+    expect(second.terminal.dispose).not.toHaveBeenCalled();
+  });
+
+  it('flushing rAF creates exactly one never-opened warm spare', () => {
+    acquireInteractive();
+    expect(rafCallbacks.length).toBe(1);
+    rafCallbacks.forEach((cb) => cb(0));
+    expect(getInteractivePoolStats()).toEqual({ activeCount: 1, warmCount: 1 });
+    // The spare was created but never opened or disposed by the pool.
+    const spare = mockTerminalInstances[mockTerminalInstances.length - 1];
+    expect(spare.open).not.toHaveBeenCalled();
+    expect(spare.dispose).not.toHaveBeenCalled();
+  });
+
+  it('the warm spare is handed out once and released instances are disposed', () => {
+    const first = acquireInteractive();
+    rafCallbacks.forEach((cb) => cb(0)); // create the warm spare
+
+    const second = acquireInteractive(); // consumes the spare
+    expect(getInteractivePoolStats()).toEqual({ activeCount: 2, warmCount: 0 });
+    expect(second.terminal.dispose).not.toHaveBeenCalled();
+
+    releaseInteractive(first);
+    releaseInteractive(second);
+    expect(getInteractivePoolStats()).toEqual({ activeCount: 0, warmCount: 0 });
+  });
+
+  it('updateInteractivePoolTheme updates the warm spare', () => {
+    acquireInteractive();
+    rafCallbacks.forEach((cb) => cb(0)); // create the warm spare
 
     /* beardgit:allow-hex: test fixture data matching ThemeData schema — not live CSS */
     const theme = {
@@ -164,8 +177,9 @@ describe('interactive terminal pool', () => {
       derived: { selection: '#264f78' },
     } as unknown as ThemeData;
 
+    const warm = mockTerminalInstances[mockTerminalInstances.length - 1];
     updateInteractivePoolTheme(theme);
-    expect(inst.terminal.options.theme).toBeDefined();
+    expect(warm.options.theme).toBeDefined();
   });
 
   it('getInteractivePoolStats returns correct counts', () => {
@@ -177,10 +191,12 @@ describe('interactive terminal pool', () => {
     const b = acquireInteractive();
     expect(getInteractivePoolStats()).toEqual({ activeCount: 2, warmCount: 0 });
 
+    // Released instances are disposed outright; without flushing rAF the
+    // warm spare never comes into existence.
     releaseInteractive(a);
-    expect(getInteractivePoolStats()).toEqual({ activeCount: 1, warmCount: 1 });
+    expect(getInteractivePoolStats()).toEqual({ activeCount: 1, warmCount: 0 });
 
     releaseInteractive(b);
-    expect(getInteractivePoolStats()).toEqual({ activeCount: 0, warmCount: 1 });
+    expect(getInteractivePoolStats()).toEqual({ activeCount: 0, warmCount: 0 });
   });
 });

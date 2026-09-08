@@ -89,17 +89,18 @@ export function acquire(): PooledInstance {
   return instance;
 }
 
-/** Release a read-only terminal instance back to the pool. */
+/**
+ * Release a read-only terminal instance.
+ *
+ * An *opened* xterm instance can never be reused: xterm 6's `open()` returns
+ * early on a terminal that already has an element, so a recycled instance
+ * would stay glued to its destroyed container and the next mount would
+ * render nothing. Always dispose; the warm spare is only ever a
+ * never-opened instance from the rAF scheduler in `acquire`.
+ */
 export function release(instance: PooledInstance): void {
   activeCount--;
-
-  if (!warmInstance) {
-    instance.terminal.clear();
-    instance.terminal.reset();
-    warmInstance = instance;
-  } else {
-    instance.terminal.dispose();
-  }
+  instance.terminal.dispose();
 }
 
 /** Update theme on all pooled instances. */
