@@ -309,8 +309,8 @@ export async function getDiffStatsIndex(): Promise<FileDiffStat[]> {
   return invoke<FileDiffStat[]>("get_diff_stats_index");
 }
 
-export async function mergeBranch(branch: string): Promise<string> {
-  return invoke<string>("merge_branch", { branch });
+export async function mergeBranch(branch: string, noFf = false): Promise<string> {
+  return invoke<string>("merge_branch", { branch, noFf });
 }
 
 export async function rebaseBranch(onto: string): Promise<string> {

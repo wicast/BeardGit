@@ -292,7 +292,7 @@ mod tests {
         repo.create_commit("Master commit").unwrap();
 
         // Attempt merge — should fail with conflict
-        let result = repo.merge_branch("conflict-branch").unwrap();
+        let result = repo.merge_branch("conflict-branch", false).unwrap();
         assert!(
             !result.success,
             "merge should fail due to conflict, stderr: {}",

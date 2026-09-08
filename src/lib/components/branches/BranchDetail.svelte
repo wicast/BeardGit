@@ -95,6 +95,14 @@
           >
             Merge into current
           </Button>
+          <Button
+            variant="success"
+            size="sm"
+            description="git merge --no-ff --no-edit — always creates a merge commit"
+            onclick={() => doMergeBranch($selectedBranchInfo!.name, true)}
+          >
+            Merge (--no-ff)
+          </Button>
           <Button variant="danger" size="sm" onclick={() => { forceDelete = false; confirmDelete = true; }}>
             Delete
           </Button>

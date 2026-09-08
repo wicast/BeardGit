@@ -58,7 +58,7 @@ vi.mock("../../../stores/createBranchDialog", () => ({
 import BranchList from "../BranchList.svelte";
 import * as createBranchDialogStore from "../../../stores/createBranchDialog";
 import * as tauriApi from "../../../api/tauri";
-import { localBranches, remoteBranches } from "../../../stores/branches";
+import { localBranches, remoteBranches, doMergeBranch } from "../../../stores/branches";
 import type { Writable } from "svelte/store";
 import type { BranchInfo } from "../../../types";
 
@@ -109,5 +109,16 @@ describe("BranchList wiring", () => {
     await fireEvent.contextMenu(getByTestId("branch-row-origin-main"));
     await fireEvent.click(getByText("Pull into current branch"));
     expect(tauriApi.pullRemote).toHaveBeenCalledWith("origin", "main");
+  });
+
+  it("offers a --no-ff merge that records a merge commit", async () => {
+    localStore.set([
+      { name: "main", is_head: true, is_remote: false, oid: "H", upstream: null, ahead: 0, behind: 0, upstream_gone: false },
+      { name: "feature", is_head: false, is_remote: false, oid: "F", upstream: null, ahead: 0, behind: 0, upstream_gone: false },
+    ]);
+    const { getByTestId, getByText } = render(BranchList);
+    await fireEvent.contextMenu(getByTestId("branch-row-feature"));
+    await fireEvent.click(getByText("Merge into current (--no-ff)"));
+    expect(vi.mocked(doMergeBranch)).toHaveBeenCalledWith("feature", true);
   });
 });

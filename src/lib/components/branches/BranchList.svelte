@@ -298,6 +298,12 @@
     }
     items.push({ label: "Merge into current", action: () => doMergeBranch(contextBranch) });
     items.push({
+      // `git merge --no-ff --no-edit`: always records a merge commit, even
+      // when a fast-forward would be possible.
+      label: "Merge into current (--no-ff)",
+      action: () => doMergeBranch(contextBranch, true),
+    });
+    items.push({
       // Base = current branch (HEAD); compare = this branch → "what this
       // branch adds over the current one" (the pre-PR review motion).
       label: m.compare_with_current_branch(),

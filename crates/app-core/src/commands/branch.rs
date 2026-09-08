@@ -223,6 +223,9 @@ pub async fn checkout_branch(
 ///
 /// # Parameters
 /// - `branch` – Name of the branch to merge into HEAD.
+/// - `no_ff` – When `true`, passes `--no-ff` so a fast-forwardable merge still
+///   records a merge commit (the CLI equivalent of `git merge --no-ff --no-edit`).
+///   Defaults to `false` (plain `git merge --no-edit`).
 ///
 /// # Returns
 /// The stdout of `git merge` on success, or stderr as an error.
@@ -230,6 +233,7 @@ pub async fn checkout_branch(
 #[instrument(skip(state, app), name = "cmd::branch::merge")]
 pub async fn merge_branch(
     branch: String,
+    no_ff: Option<bool>,
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<String, IpcError> {
@@ -237,7 +241,9 @@ pub async fn merge_branch(
     with_mutation_guard_async(&state, &app, MutationKind::Merge, || async move {
         tokio::task::spawn_blocking(move || {
             let repo = git_engine::Repository::open(repo_path).map_err(IpcError::from)?;
-            let result = repo.merge_branch(&branch).map_err(IpcError::from)?;
+            let result = repo
+                .merge_branch(&branch, no_ff.unwrap_or(false))
+                .map_err(IpcError::from)?;
             if result.success {
                 Ok(result.stdout)
             } else {

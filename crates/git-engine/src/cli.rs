@@ -377,9 +377,12 @@ impl Repository {
     }
 
     /// Merge `branch` into the current branch using `--no-edit` (no interactive prompt).
-    #[instrument(skip(self), fields(branch = %branch))]
-    pub fn merge_branch(&self, branch: &str) -> Result<GitCliResult, GitError> {
-        self.git_cmd(&merge_args(branch))
+    ///
+    /// With `no_ff`, `--no-ff` is passed too, so a fast-forwardable merge
+    /// still records a merge commit (`git merge --no-ff --no-edit`).
+    #[instrument(skip(self), fields(branch = %branch, no_ff))]
+    pub fn merge_branch(&self, branch: &str, no_ff: bool) -> Result<GitCliResult, GitError> {
+        self.git_cmd(&merge_args(branch, no_ff))
     }
 
     /// Rebase the current branch onto `onto`.
@@ -778,8 +781,16 @@ impl Repository {
 // convention already applied to push/fetch/pull/tag.
 // ---------------------------------------------------------------------------
 
-fn merge_args(branch: &str) -> [&str; 4] {
-    ["merge", "--no-edit", "--", branch]
+fn merge_args(branch: &str, no_ff: bool) -> Vec<&str> {
+    let mut args = Vec::with_capacity(if no_ff { 5 } else { 4 });
+    args.push("merge");
+    if no_ff {
+        args.push("--no-ff");
+    }
+    args.push("--no-edit");
+    args.push("--");
+    args.push(branch);
+    args
 }
 
 fn rebase_args(onto: &str) -> [&str; 3] {
@@ -1092,8 +1103,40 @@ mod tests {
         repo.create_commit("Feature commit").unwrap();
         // Switch back and merge
         repo.checkout_branch("master").unwrap();
-        let result = repo.merge_branch("feature").unwrap();
+        let result = repo.merge_branch("feature", false).unwrap();
         assert!(result.success);
+    }
+
+    #[test]
+    fn test_merge_no_ff_creates_merge_commit() {
+        // `merge_branch(.., no_ff = true)` must record a merge commit even
+        // when the branch is fast-forwardable (the default would just move
+        // HEAD). Verified by checking HEAD gains a second parent.
+        let (dir, repo) = create_test_repo();
+        let default_branch = repo.get_current_branch().unwrap().unwrap();
+
+        repo.create_branch("feature").unwrap();
+        repo.checkout_branch("feature").unwrap();
+        fs::write(dir.path().join("feature.txt"), "feature work\n").unwrap();
+        repo.stage_files(&["feature.txt".to_string()]).unwrap();
+        repo.create_commit("Feature commit").unwrap();
+
+        // Diverge the base so a plain merge would fast-forward.
+        repo.checkout_branch(&default_branch).unwrap();
+        fs::write(dir.path().join("base.txt"), "base work\n").unwrap();
+        repo.stage_files(&["base.txt".to_string()]).unwrap();
+        repo.create_commit("Base commit").unwrap();
+
+        let result = repo.merge_branch("feature", true).unwrap();
+        assert!(result.success, "merge should succeed: {}", result.stderr);
+
+        let head = repo.git_cmd(&["rev-parse", "HEAD"]).unwrap();
+        let merge_oid = head.stdout.trim();
+        assert_eq!(
+            repo.get_commit(merge_oid).unwrap().parents.len(),
+            2,
+            "no-ff merge must produce a two-parent merge commit"
+        );
     }
 
     #[test]
@@ -1374,15 +1417,20 @@ mod tests {
     #[test]
     fn ref_arg_builders_put_operand_after_double_dash() {
         assert_eq!(
-            merge_args("--upload-pack=x"),
+            merge_args("--upload-pack=x", false),
             ["merge", "--no-edit", "--", "--upload-pack=x"]
+        );
+        assert_eq!(
+            merge_args("--upload-pack=x", true),
+            ["merge", "--no-ff", "--no-edit", "--", "--upload-pack=x"]
         );
         assert_eq!(rebase_args("--exec=x"), ["rebase", "--", "--exec=x"]);
         assert_eq!(cherry_pick_args("-x"), ["cherry-pick", "--", "-x"]);
         assert_eq!(revert_args("-x"), ["revert", "--no-edit", "--", "-x"]);
         // `--` must immediately precede the operand in every case.
         for args in [
-            merge_args("b").as_slice(),
+            merge_args("b", false).as_slice(),
+            merge_args("b", true).as_slice(),
             rebase_args("b").as_slice(),
             cherry_pick_args("b").as_slice(),
             revert_args("b").as_slice(),

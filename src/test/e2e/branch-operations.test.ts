@@ -230,7 +230,17 @@ describe("branch operations workflow", () => {
     await doMergeBranch("feature/auth");
 
     const call = invokeMock.mock.calls.find((c) => c[0] === "merge_branch");
-    expect(call?.[1]).toEqual({ branch: "feature/auth" });
+    expect(call?.[1]).toEqual({ branch: "feature/auth", noFf: false });
+  });
+
+  it("doMergeBranch forwards noFf to record a merge commit", async () => {
+    branches.set(MOCK_BRANCHES);
+    mockInvokeResponse("merge_branch", "Merge made by the 'ort' strategy");
+
+    await doMergeBranch("feature/auth", true);
+
+    const call = invokeMock.mock.calls.find((c) => c[0] === "merge_branch");
+    expect(call?.[1]).toEqual({ branch: "feature/auth", noFf: true });
   });
 
   // ── clearBranchState ─────────────────────────────────────────────────

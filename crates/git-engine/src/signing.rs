@@ -565,7 +565,7 @@ mod tests {
         repo.stage_files(&["base.txt".to_string()]).unwrap();
         repo.create_commit("base work").unwrap();
 
-        let result = repo.merge_branch("feature").unwrap();
+        let result = repo.merge_branch("feature", false).unwrap();
         assert!(result.success, "merge should succeed: {}", result.stderr);
         let head = repo.git_cmd(&["rev-parse", "HEAD"]).unwrap();
         let merge_oid = head.stdout.trim();

@@ -155,11 +155,17 @@ export async function doDeleteBranches(
   return result;
 }
 
-export async function doMergeBranch(name: string) {
+/**
+ * Merge `name` into the current branch. With `noFf`, passes `--no-ff` so a
+ * fast-forwardable merge still records a merge commit
+ * (`git merge --no-ff --no-edit`); the default lets git fast-forward.
+ */
+export async function doMergeBranch(name: string, noFf = false) {
   await runMutation({
     kind: "merge",
-    invoke: () => apiMerge(name),
-    successToast: () => `Merged ${name}`,
+    invoke: () => apiMerge(name, noFf),
+    successToast: () =>
+      noFf ? `Merged ${name} (merge commit created)` : `Merged ${name}`,
     failureToastPrefix: "Merge failed",
   });
   // Branch list refresh is driven by the project-mutated event.
