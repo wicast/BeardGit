@@ -1,0 +1,70 @@
+/*
+  Sideways scrolling for tree-shaped lists.
+  ────────────────────────────────────────
+
+  Every tree in this app indents its rows with `padding-left` — 12 px plus
+  14 or 16 px per level (`ChangesList`, `FileChangeList`, `PathTree`,
+  `WorkdirTree`, `AiConfigFileTree`) — and clamps the label with
+  `overflow: hidden; text-overflow: ellipsis; white-space: nowrap`. The
+  clamp is what made depth a one-way door: the deeper the path, the less
+  room the name had, until the row read `…` and the file was simply not
+  identifiable. Nothing was wrong with the layout — the text was being
+  squeezed out of a fixed-width box on purpose.
+
+  The fix is to stop squeezing and let the row take the width its content
+  actually needs, then scroll the container sideways to reach the rest.
+  Two classes, and the contract between them is the whole feature:
+
+  `.tree-x-scroll` — the scroll container. Owns `overflow-x` and nothing
+  else, so a component can keep its own `overflow-y` (most of these lists
+  live inside a taller vertical scroller) without the two fighting.
+  `overflow-x: auto` computes `overflow-y: visible` to `auto`, which is
+  harmless here for the same reason: an auto-height box cannot scroll
+  vertically. Where the box *does* have a bounded height — `FileTreeView`'s
+  `.tree-body` is `overflow: auto` — the horizontal scrollbar pins to the
+  bottom of the visible area, which is the better of the two layouts.
+
+  `.tree-x-row` — one row. Owns `width` and `min-width`, so the row is as
+  wide as its own content and never narrower than the container:
+  `min-width: 100%` is what keeps the hover/selected background spanning
+  the panel the way it always has, and `width: max-content` is what lets a
+  deep row grow past it. Above and below the overflow point the rendered
+  result is identical to the old `width: 100%`, so no list changes
+  appearance until something genuinely does not fit.
+
+  Components must therefore NOT set `width` on a row or `overflow-x` on a
+  scroll container: a Svelte-scoped rule (`.file-item.svelte-abc123`)
+  outranks these single-class utilities, so a leftover declaration would
+  silently win and the row would never grow. That is the one trap here,
+  and it is why the old `width: 100%` declarations were deleted rather
+  than left in place.
+
+  Rows that are absolutely positioned by the virtual window need the same
+  width, but their style arrives as an inline attribute — see
+  `virtualRowStyle(..., { intrinsicWidth: true })` in `utils/virtualWindow`,
+  which emits `right: auto` so the explicit width is what decides.
+
+  What is deliberately NOT here: pinning trailing content (the `+`/`−`
+  stage buttons, folder counts, the dirty dot) to the right edge with
+  `position: sticky`. A row wider than its panel then scrolls its actions
+  out of view, which is how tree views with horizontal scrolling behave
+  everywhere else and is the point of having a scrollbar at all. Pinning
+  them was tried and rejected: those controls have transparent or
+  translucent backgrounds, so a pinned button paints its glyph on top of
+  the path text scrolling underneath it.
+*/
+
+.tree-x-scroll {
+  overflow-x: auto;
+  /* A column flex container so the rows below are flex items, which is what
+     lets `min-width: 100%` on a row resolve against the container's width
+     while its `max-content` still exceeds it. On the block path both
+     resolve to the container's width and nothing overflows. */
+  display: flex;
+  flex-direction: column;
+}
+
+.tree-x-row {
+  width: max-content;
+  min-width: 100%;
+}

@@ -193,10 +193,17 @@
    *  their `index * ROW_HEIGHT` slot, and every row is indented by its
    *  tree depth (depth 0 = the flat list's own 12px left padding). Rows
    *  share one uniform height in both modes, which is what keeps the
-   *  window math honest. */
+   *  window math honest.
+   *
+   *  Windowed rows also ask for their own content width: `left: 0; right: 0`
+   *  would clamp a deep path to the panel, which is the case the sideways
+   *  scroll in `styles/tree-scroll.css` exists for. A windowed row has no
+   *  class-level width to inherit it from, so it is spelled out inline. */
   function rowStyle(index: number, depth: number, positioned: boolean): string {
     const indent = `padding-left: ${12 + depth * 14}px`;
-    return positioned ? `${virtualRowStyle(index, ROW_HEIGHT)}; ${indent}` : indent;
+    return positioned
+      ? `${virtualRowStyle(index, ROW_HEIGHT, { intrinsicWidth: true })}; ${indent}`
+      : indent;
   }
 
   $effect(() => {
@@ -721,7 +728,7 @@
   <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div
-    class="file-list"
+    class="file-list tree-x-scroll"
     role="list"
     tabindex="0"
     bind:this={listEl}
@@ -747,7 +754,7 @@
       {@const node = row.node}
       {@const stat = node.kind === "file" ? stats?.get(node.path) : undefined}
       <div
-        class="file-item"
+        class="file-item tree-x-row"
         class:dir-item={node.kind === "dir"}
         class:selected={node.kind === "file" && node.path === selectedPath}
         class:focused={i === focusIndex}
@@ -915,6 +922,9 @@
     text-align: center;
   }
 
+  /* Also the sideways scroll container for a deep tree — see
+     `styles/tree-scroll.css`. `overflow-y` stays here: the utility owns one
+     axis on purpose so the two do not overwrite each other. */
   .file-list {
     overflow-y: auto;
   }
@@ -930,7 +940,8 @@
     align-items: center;
     gap: 6px;
     padding: 3px 12px;
-    width: 100%;
+    /* Width is `.tree-x-row`'s (styles/tree-scroll.css) — a scoped `width`
+       here would outrank that utility and re-clamp every deep path. */
     border-left: 2px solid transparent;
     transition: background 0.1s ease, border-color 0.1s ease;
   }

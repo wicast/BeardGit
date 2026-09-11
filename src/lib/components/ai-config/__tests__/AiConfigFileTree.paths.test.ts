@@ -125,4 +125,26 @@ describe("AiConfigFileTree — telling one CLAUDE.md from another", () => {
     );
     expect(names).toEqual(["CLAUDE.md"]);
   });
+
+  /**
+   * Rows indent 16px per level. The tree used to be `overflow-x: hidden`,
+   * which clipped a nested path off the right edge rather than letting the
+   * user reach it; it scrolls sideways now (`styles/tree-scroll.css`).
+   * jsdom does not lay out, so this guards the wiring, not the widths.
+   */
+  it("scrolls sideways instead of clipping a nested path", async () => {
+    const { container } = await mount([
+      md("crates/git-engine/crates/inner/deep/CLAUDE.md"),
+    ]);
+
+    const tree = container.querySelector(".file-tree");
+    expect(tree?.classList.contains("tree-x-scroll")).toBe(true);
+
+    const rows = container.querySelectorAll(".tree-folder, .tree-leaf");
+    // Nested levels render, and each one carries the content-sized width.
+    expect(rows.length).toBeGreaterThan(2);
+    for (const row of rows) {
+      expect(row.classList.contains("tree-x-row")).toBe(true);
+    }
+  });
 });

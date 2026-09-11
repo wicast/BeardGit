@@ -8,6 +8,7 @@
   Pure presentational; no store access. Callers own data + selection.
 -->
 <script lang="ts" generics="M">
+  import { horizontalWheel } from "$lib/actions/horizontalWheel";
   interface Item { path: string; meta?: M; }
   interface Props {
     items: Item[];
@@ -98,18 +99,24 @@
 </script>
 
 {#if isTree}
-  <ul class="path-tree">
+  <!-- `tree-x-scroll` / `tree-x-row` (styles/tree-scroll.css): a nested path
+       is indented 16 px per level, so the name is the first thing to run
+       out of room. Rows keep their natural width and the tree scrolls
+       sideways instead of truncating the one part that identifies the file.
+       `horizontalWheel` is what makes the sideways gesture actually move
+       the list in this WebView — see that action for the measurement. -->
+  <ul class="path-tree tree-x-scroll" use:horizontalWheel>
     {#each tree as node}
       {@render treeNode(node, 0)}
     {/each}
   </ul>
 {:else}
-  <ul class="path-flat">
+  <ul class="path-flat tree-x-scroll" use:horizontalWheel>
     {#each items as item (item.path)}
       <li>
         <button
           data-pathtree-leaf
-          class="leaf"
+          class="leaf tree-x-row"
           class:selected={selectedPath === item.path}
           onclick={() => onSelect?.(item.path)}
           aria-label={item.path}
@@ -124,7 +131,7 @@
     {#if node.isFolder}
       <button
         data-pathtree-folder
-        class="folder"
+        class="folder tree-x-row"
         style="padding-left: {depth * 16}px"
         onclick={() => toggle(node.fullPath)}
         aria-label={node.fullPath}
@@ -147,7 +154,7 @@
     {:else if node.item}
       <button
         data-pathtree-leaf
-        class="leaf"
+        class="leaf tree-x-row"
         style="padding-left: {depth * 16}px"
         class:selected={selectedPath === node.fullPath}
         onclick={() => onSelect?.(node.fullPath)}
@@ -170,7 +177,9 @@
   .path-tree li, .path-flat li { list-style: none; }
   .folder, .leaf {
     display: flex; align-items: center; gap: 6px;
-    width: 100%; background: none; border: none;
+    /* No `width` here: `.tree-x-row` owns it, and a scoped rule would
+       outrank that utility and pin every row back to the panel width. */
+    background: none; border: none;
     text-align: left; cursor: pointer;
     font-family: var(--font-mono); font-size: var(--font-size-sm);
     color: var(--text-primary); padding: 3px 10px;

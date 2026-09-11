@@ -97,3 +97,48 @@ describe("FileChangeList tree mode", () => {
     expect(onSelect).toHaveBeenCalledWith("src/lib/deep/b.ts");
   });
 });
+
+/**
+ * A commit's file list is indented 14px per tree level, and its rows used
+ * to be stretched to the panel with the path clamped to an ellipsis — so a
+ * deep path lost the filename, which is the only part worth reading.
+ *
+ * Rows now take their content's width and the list scrolls sideways
+ * (`styles/tree-scroll.css`). jsdom does not lay out, so what is checked
+ * here is the wiring: the class on the scroll container, the class on the
+ * rows, and — for the windowed path, where the width is an inline style
+ * because an absolutely positioned row has no class-level width to
+ * inherit — that `right: auto` really reached the DOM.
+ */
+describe("FileChangeList — sideways scroll for deep paths", () => {
+  it("makes the list the scroll container and its rows content-sized", () => {
+    const { container } = render(FileChangeList, { props: { files: FILES } });
+    const list = container.querySelector("ul.file-list")!;
+    expect(list.classList.contains("tree-x-scroll")).toBe(true);
+    for (const row of container.querySelectorAll("li")) {
+      expect(row.classList.contains("tree-x-row")).toBe(true);
+    }
+  });
+
+  it("gives every row the width even when the list is windowed", () => {
+    // The window engages above 500 rows; jsdom reports no viewport, so the
+    // component falls back to its assumed height and still windows.
+    const many = Array.from({ length: 501 }, (_, i) => ({
+      path: `src/lib/components/deep/deeper/f${i}.ts`,
+      status: "modified",
+    }));
+    const { container } = render(FileChangeList, { props: { files: many } });
+
+    const sizer = container.querySelector("li.virt-sizer");
+    expect(sizer).not.toBeNull();
+    const rows = [...sizer!.querySelectorAll<HTMLElement>("li.tree-x-row")];
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.length).toBeLessThan(many.length);
+
+    const style = rows[0].getAttribute("style") ?? "";
+    expect(style).toContain("position: absolute");
+    expect(style).toContain("right: auto");
+    expect(style).toContain("width: max-content");
+    expect(style).toContain("min-width: 100%");
+  });
+});

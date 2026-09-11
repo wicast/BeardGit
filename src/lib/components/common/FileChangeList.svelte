@@ -21,6 +21,7 @@
   import * as m from "$lib/paraglide/messages";
   import { get, writable } from "svelte/store";
   import { remembered } from "$lib/stores/viewMemory";
+  import { horizontalWheel } from "$lib/actions/horizontalWheel";
   import {
     computeVirtualWindow,
     findScroller,
@@ -159,10 +160,18 @@
 
   /** Windowed rows are absolutely placed at their `index * ROW_HEIGHT`
    *  slot; every row is indented by its tree depth (depth 0 = the flat
-   *  list's own 12px left padding). */
+   *  list's own 12px left padding).
+   *
+   *  Windowed rows ask for their own content width as well: the default
+   *  `left: 0; right: 0` stretches them to the panel, which truncates a
+   *  deep path into an ellipsis — the case `styles/tree-scroll.css`
+   *  handles by scrolling the list sideways. Non-windowed rows get the
+   *  same width from the `.tree-x-row` class on the `<li>`. */
   function rowStyle(index: number, depth: number, positioned: boolean): string {
     const indent = `padding-left: ${12 + depth * 14}px`;
-    return positioned ? `${virtualRowStyle(index, ROW_HEIGHT)}; ${indent}` : indent;
+    return positioned
+      ? `${virtualRowStyle(index, ROW_HEIGHT, { intrinsicWidth: true })}; ${indent}`
+      : indent;
   }
 
   function handleClick(path: string) {
@@ -192,7 +201,7 @@
 {/if}
 
 {#if rows.length > 0}
-  <ul class="file-list" bind:this={listEl}>
+  <ul class="file-list tree-x-scroll" use:horizontalWheel bind:this={listEl}>
     {#if virtualWindow}
       <!-- Windowed: the sizer holds the full scroll height, and only the
            visible slice is mounted, anchored at (index * ROW_HEIGHT). -->
@@ -215,7 +224,7 @@
 
 {#snippet rowView(row: Row, index: number, positioned: boolean)}
   {@const node = row.node}
-  <li style={rowStyle(index, row.depth, positioned)}>
+  <li class="tree-x-row" style={rowStyle(index, row.depth, positioned)}>
     {#if node.kind === "dir"}
       <button
         class="file-item dir-item"
@@ -254,6 +263,11 @@
     padding: 2px 4px 4px;
   }
 
+  /* `tree-x-scroll` (styles/tree-scroll.css) makes this the sideways
+     container for a deep path; the rows below it are the `tree-x-row`s.
+     It stays an auto-height box, so `overflow-x: auto` — which computes
+     `overflow-y` to `auto` as well — cannot start scrolling vertically
+     and shadow the `<aside>` that actually does. */
   .file-list {
     list-style: none;
     margin: 0;
@@ -274,7 +288,6 @@
     gap: 6px;
     padding: 4px 12px;
     min-width: 0;
-    width: 100%;
     background: none;
     border: none;
     text-align: left;

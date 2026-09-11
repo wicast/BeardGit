@@ -64,4 +64,34 @@ describe("virtualRowStyle", () => {
     expect(virtualRowStyle(3, 24)).toContain("top: 72px");
     expect(virtualRowStyle(3, 24)).toContain("height: 24px");
   });
+
+  it("stretches a row across the sizer by default", () => {
+    const style = virtualRowStyle(0, 26);
+    expect(style).toContain("left: 0");
+    expect(style).toContain("right: 0");
+    expect(style).not.toContain("width:");
+  });
+
+  // A windowed tree row has no class-level width to inherit, so the
+  // sideways-scroll contract has to survive in the inline style: `right: 0`
+  // would win the width back and re-clamp a deep path to an ellipsis.
+  describe("with intrinsicWidth", () => {
+    const style = virtualRowStyle(2, 26, { intrinsicWidth: true });
+
+    it("releases the right edge so the width can decide", () => {
+      expect(style).toContain("right: auto");
+      expect(style).not.toContain("right: 0");
+    });
+
+    it("takes the content's width, and never less than the container", () => {
+      expect(style).toContain("width: max-content");
+      expect(style).toContain("min-width: 100%");
+    });
+
+    it("still anchors the row at its slot", () => {
+      expect(style).toContain("top: 52px");
+      expect(style).toContain("height: 26px");
+      expect(style).toContain("position: absolute");
+    });
+  });
 });

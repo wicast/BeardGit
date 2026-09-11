@@ -100,7 +100,7 @@
   {@const open = $expandedDirs.has(entry.path)}
   <button
     type="button"
-    class="row"
+    class="row tree-x-row"
     class:is-dir={entry.is_directory}
     class:is-selected={!entry.is_directory && entry.path === selectedPath}
     style={indent(depth)}
@@ -164,7 +164,8 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    width: 100%;
+    /* Width comes from `.tree-x-row` (styles/tree-scroll.css) so a deeply
+       indented path stays readable; `.tree-body` scrolls sideways to it. */
     padding-top: 3px;
     padding-bottom: 3px;
     padding-right: 8px;

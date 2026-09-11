@@ -16,6 +16,7 @@
   import { repoInfo } from "$lib/stores/repo";
   import { remembered, scoped } from "$lib/stores/viewMemory";
   import * as m from "$lib/paraglide/messages";
+  import { horizontalWheel } from "$lib/actions/horizontalWheel";
 
   // ─── Props ───
 
@@ -189,7 +190,9 @@
 
 <!-- ─── Template ─── -->
 
-<div class="file-tree">
+<!-- `tree-x-scroll`: rows are indented 16px per level, so the sideways
+     scroll is what keeps a nested config path readable instead of ellipsised. -->
+<div class="file-tree tree-x-scroll" use:horizontalWheel>
   <!-- PROJECT section -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
@@ -271,7 +274,7 @@
   {#if node.isFolder}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
-      class="tree-folder"
+      class="tree-folder tree-x-row"
       style:padding-left="{12 + depth * 16}px"
       onclick={() => toggleFolder(node.path)}
       onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") toggleFolder(node.path); }}
@@ -290,7 +293,7 @@
   {:else}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
-      class="tree-leaf"
+      class="tree-leaf tree-x-row"
       class:selected={$activeFilePath === node.path}
       style:padding-left="{12 + depth * 16}px"
       onclick={() => onSelectFile(node.path)}
@@ -313,7 +316,8 @@
     display: flex;
     flex-direction: column;
     overflow-y: auto;
-    overflow-x: hidden;
+    /* `overflow-x` is `tree-x-scroll`'s; it used to be `hidden` here, which
+       is what clipped a deeply nested config path away. */
   }
 
   /* ─── Section header ─── */

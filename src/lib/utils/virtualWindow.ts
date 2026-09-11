@@ -79,12 +79,39 @@ export function computeVirtualWindow(
   return { start, end, totalHeight: count * rowHeight };
 }
 
+/** Options for {@link virtualRowStyle}. */
+export interface VirtualRowStyleOptions {
+  /**
+   * Size the row to its own content instead of stretching it across the
+   * sizer.
+   *
+   * The default (`left: 0; right: 0`) makes every row exactly as wide as
+   * the scroll container, which is correct for a flat list and wrong for
+   * a tree: an indented path is then clamped to whatever room is left,
+   * and the name is the part that gets dropped. `right: auto` hands the
+   * width to `width: max-content` — the row grows to fit its text and the
+   * container scrolls sideways — with `min-width: 100%` keeping short
+   * rows, and their hover background, as wide as they have always been.
+   *
+   * Pairs with the `.tree-x-row` utility in `styles/tree-scroll.css`,
+   * which does the same for rows that are laid out normally.
+   */
+  intrinsicWidth?: boolean;
+}
+
 /**
  * Absolute-position style for the row at `index` within a sizer of
  * `rowHeight`. Kept here so consumers don't each re-derive the offset.
  */
-export function virtualRowStyle(index: number, rowHeight: number): string {
-  return `position: absolute; left: 0; right: 0; top: ${index * rowHeight}px; height: ${rowHeight}px`;
+export function virtualRowStyle(
+  index: number,
+  rowHeight: number,
+  options: VirtualRowStyleOptions = {},
+): string {
+  const width = options.intrinsicWidth
+    ? "right: auto; width: max-content; min-width: 100%"
+    : "right: 0";
+  return `position: absolute; left: 0; ${width}; top: ${index * rowHeight}px; height: ${rowHeight}px`;
 }
 
 /**

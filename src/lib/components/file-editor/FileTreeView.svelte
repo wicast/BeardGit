@@ -29,6 +29,7 @@
   import * as m from "$lib/paraglide/messages";
   import { fileGlyphFor } from "./file-icons";
   import WorkdirTree from "./WorkdirTree.svelte";
+  import { horizontalWheel } from "$lib/actions/horizontalWheel";
   import {
     activeTabPath,
     knownEntries,
@@ -238,7 +239,14 @@
     />
   </header>
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="tree-body" bind:this={treeBody} oncontextmenu={onTreeContext}>
+  <!-- Already `overflow: auto`; `tree-x-scroll` names it as the container the
+       `tree-x-row` rows in `WorkdirTree` grow inside. -->
+  <div
+    class="tree-body tree-x-scroll"
+    use:horizontalWheel
+    bind:this={treeBody}
+    oncontextmenu={onTreeContext}
+  >
     {#if searching}
       {#if (searchPending || $searchLoading) && $searchResults.length === 0}
         <div class="tree-state">
