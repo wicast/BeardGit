@@ -40,6 +40,8 @@
     type CategoryId,
   } from "$lib/stores/settingsRoute";
   import { activeViewStore } from "$lib/stores/navigation";
+  import { remembered } from "$lib/stores/viewMemory";
+  import ResizeHandle from "$lib/components/common/ResizeHandle.svelte";
   import GeneralSettings, {
     settingsIndex as generalIndex,
   } from "./GeneralSettings.svelte";
@@ -62,6 +64,26 @@
 
   /** Svelte-runified active category; the shell binds this to `CategoryNav`. */
   let activeCategory = $state<CategoryId>(DEFAULT_CATEGORY);
+
+  /**
+   * Category navigation width — same treatment as the app's nav sidebar
+   * (see `layout/Sidebar.svelte`): `null` until dragged, so an untouched
+   * pane keeps the responsive clamp instead of freezing at whatever it
+   * measured on mount, and the value is remembered for the session.
+   */
+  const SETTINGS_NAV_DEFAULT = "clamp(160px, 14vw, 220px)";
+  const settingsNavWidth = remembered<number | null>(
+    "layout.settingsNavWidth",
+    null,
+  );
+  let settingsNavPaneX = $derived(
+    $settingsNavWidth === null ? SETTINGS_NAV_DEFAULT : `${$settingsNavWidth}px`,
+  );
+
+  /** Half the window at most — the settings form is the point of the page. */
+  function settingsNavMaxWidth(): number {
+    return Math.min(420, Math.round(window.innerWidth * 0.5));
+  }
 
   /** Search query — kept on the shell so Phase 5 can jump to matches. */
   let searchQuery = $state("");
@@ -328,7 +350,7 @@
     </div>
   </div>
 
-  <div class="settings-body">
+  <div class="settings-body" style:--pane-x={settingsNavPaneX}>
     <aside class="settings-sidebar">
       <CategoryNav
         categories={categories.map((c) => ({
@@ -340,6 +362,14 @@
         onSelect={handleSelectCategory}
       />
     </aside>
+    <ResizeHandle
+      size={$settingsNavWidth}
+      onSizeChange={(next) => settingsNavWidth.set(next)}
+      min={150}
+      max={settingsNavMaxWidth}
+      label={m.resize_settings_nav()}
+      testid="settings-nav-resize-handle"
+    />
 
     <section class="settings-content" data-testid="settings-content">
       <header class="settings-content__header">
@@ -456,10 +486,14 @@
     display: flex;
     flex: 1;
     overflow: hidden;
+    /* Anchor for the absolutely-positioned resize handle (see
+       lib/styles/resize-handle.css). */
+    position: relative;
   }
 
   .settings-sidebar {
-    width: clamp(160px, 14vw, 220px);
+    /* The one number the pane and its resize handle both read. */
+    width: var(--pane-x, clamp(160px, 14vw, 220px));
     flex-shrink: 0;
     border-right: 1px solid var(--border);
     background: var(--bg-secondary);

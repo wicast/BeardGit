@@ -33,8 +33,9 @@
  * difference nobody can see — both arrangements render as a 1px line with a
  * grab strip beside it, differing only in whether that strip is 3px or 4px.
  *
- * Colour was the visible defect; position was not. Use `--bordered` where
- * the handle owns the line, plain where the sidebar does.
+ * Colour was the visible defect; position was not. The remaining choice is
+ * per-view and settled: the pane that owns the seam draws the 1px line, the
+ * handle never does.
  */
 
 .resize-handle {
@@ -96,13 +97,65 @@
 }
 
 /**
- * Kept as a no-op so the Changes markup does not need editing: the handle
- * no longer draws the separator line under any variant, because it no
- * longer occupies the space the line would sit in. The panel's own border
- * is the line now, in every view.
+ * Anchor variants — where a pane's edge is, published by the split container
+ * as `--pane-x`.
+ *
+ * Every vertical split in the app (SplitView's list+detail panes, the
+ * Changes column, the nav sidebar, the commit detail pane) puts the handle
+ * *over* the pane's border instead of in the row: `left`/`right` is the
+ * seam, so the caller sets one custom property and owns nothing else.
+ *
+ * The fallback matters: without one, a container that forgot to publish
+ * `--pane-x` leaves `left` invalid at computed-value time, the property
+ * falls back to `auto`, and the handle lands in the container's top-left
+ * corner — visible, draggable, and resizing the wrong pane.
  */
-.resize-handle--bordered {
-  /* intentionally empty */
+.resize-handle--anchor-left,
+.resize-handle--anchor-right {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  z-index: 2;
+}
+
+.resize-handle--anchor-left {
+  left: var(--pane-x, 0px);
+  margin-left: -4px;
+}
+
+.resize-handle--anchor-right {
+  right: var(--pane-x, 0px);
+  margin-right: -4px;
+}
+
+/**
+ * Horizontal variant — the bottom diff panel's top edge.
+ *
+ * Unlike the anchor variants this one stays *in flow*, `border-top` and all.
+ * Its 1px line is part of the panel's height budget, and moving it out of
+ * flow (which is what the anchor variants do) shifts every baselined view
+ * that opens a diff by 5px. `position: relative` is what the shared
+ * `::after` highlight needs; without it that 2px rule would resolve against
+ * the nearest positioned ancestor and light up somewhere else entirely.
+ */
+.resize-handle--horizontal {
+  position: relative;
+  width: auto;
+  height: 4px;
+  cursor: row-resize;
+  border-top: 1px solid var(--border);
+}
+
+.resize-handle--horizontal::after {
+  top: 50%;
+  bottom: auto;
+  left: 0;
+  right: 0;
+  width: auto;
+  height: 2px;
+  margin: 0;
+  margin-top: -1px;
 }
 
 /**

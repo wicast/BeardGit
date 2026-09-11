@@ -11,6 +11,7 @@
   import ResizableDiffPanel from "$lib/components/editor/ResizableDiffPanel.svelte";
   import LazyComponent from "$lib/components/common/LazyComponent.svelte";
   import EmptyState from "$lib/components/common/EmptyState.svelte";
+  import ResizeHandle from "$lib/components/common/ResizeHandle.svelte";
   import { repoInfo, isLoading, error } from "$lib/stores/repo";
   import { selectedCommit, selectedOid, selectedCommitFiles, openFileDiff, navigateToCommit, graphNavigateDown, graphNavigateUp, graphNavigateFirst, graphNavigateLast, fetchDiffSides, fileDiffPanel, loadingFileDiff, closeFileDiff } from "$lib/stores/graph";
   import type { RawDiffContent } from "$lib/stores/graph";
@@ -35,6 +36,7 @@
   import { activeViewStore, installProviderDisconnectReroute } from "$lib/stores/navigation";
   import { getRepoState } from "$lib/stores/repo-state";
   import { resolveViewOnSwitch } from "$lib/stores/repo-state/viewMemory";
+  import { remembered } from "$lib/stores/viewMemory";
   import { loadProjectSnapshot } from "$lib/stores/project-cache";
   import { branchFileDiff, branchSelectedCommit, branchSelectedFiles, closeBranchCommitDetail } from "$lib/stores/branches";
   import { blamePreviousView } from "$lib/stores/blame";
@@ -135,8 +137,37 @@
   );
   let registeredShortcutIds: string[] = [];
   const CHANGES_SIDEBAR_DEFAULT_WIDTH = 320;
-  let changesSidebarWidth = $state(CHANGES_SIDEBAR_DEFAULT_WIDTH);
-  let isDraggingChanges = $state(false);
+
+  /**
+   * The three drag-resizable side columns of the shell: the staging list,
+   * the commit detail pane (Graph and Branches share one width — it is the
+   * same pane to the user), and the diff panel's own height lives in
+   * `stores/diffPanelSize`.
+   *
+   * All three are `null` until dragged, so an untouched pane keeps the
+   * responsive `clamp()`/default it has always had rather than being
+   * frozen at whatever it measured on mount; `remembered` is RAM-only
+   * session memory, matching every other split in the app.
+   */
+  const changesSidebarWidth = remembered<number | null>(
+    "layout.changesSidebarWidth",
+    null,
+  );
+  const commitDetailWidth = remembered<number | null>(
+    "layout.commitDetailWidth",
+    null,
+  );
+
+  const CHANGES_SIDEBAR_DEFAULT = `${CHANGES_SIDEBAR_DEFAULT_WIDTH}px`;
+  const COMMIT_DETAIL_DEFAULT = "clamp(260px, 22vw, 360px)";
+
+  let changesPaneX = $derived(
+    $changesSidebarWidth === null ? CHANGES_SIDEBAR_DEFAULT : `${$changesSidebarWidth}px`,
+  );
+  let commitDetailPaneX = $derived(
+    $commitDetailWidth === null ? COMMIT_DETAIL_DEFAULT : `${$commitDetailWidth}px`,
+  );
+
   let sidebarCollapsed = $state(false);
   let recentRepos = $state<{ path: string; name: string }[]>([]);
   /** True while the OS is hovering a draggable file/folder over the
@@ -156,53 +187,21 @@
   });
 
 
-  /** Max width for the changes sidebar: 80% of the changes layout,
-   *  measured from the resize handle's container so the diff pane
-   *  always keeps ~20%. Falls back to the window when unmounted. */
-  function changesSidebarMaxWidth(handle: HTMLElement | null): number {
-    const containerWidth =
-      handle?.parentElement?.clientWidth ?? window.innerWidth;
+  /** Max width for the changes sidebar: 80% of the changes layout, so the
+   *  diff pane always keeps ~20%. The row is looked up rather than threaded
+   *  through the handle because it is this pane's own container and only one
+   *  is ever mounted; off the Changes view the bound is moot (its handle is
+   *  not rendered either) and the window is the honest fallback. */
+  function changesSidebarMaxWidth(): number {
+    const layout = document.querySelector(".changes-layout");
+    const containerWidth = layout?.clientWidth ?? window.innerWidth;
     return containerWidth * 0.8;
   }
 
-  function startChangesSidebarResize(e: MouseEvent) {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startWidth = changesSidebarWidth;
-    const maxW = changesSidebarMaxWidth(e.currentTarget as HTMLElement);
-    isDraggingChanges = true;
-
-    function onMouseMove(e: MouseEvent) {
-      const delta = e.clientX - startX;
-      changesSidebarWidth = Math.max(240, Math.min(maxW, startWidth + delta));
-    }
-
-    function onMouseUp() {
-      window.removeEventListener("mousemove", onMouseMove);
-      window.removeEventListener("mouseup", onMouseUp);
-      isDraggingChanges = false;
-    }
-
-    window.addEventListener("mousemove", onMouseMove);
-    window.addEventListener("mouseup", onMouseUp);
-  }
-
-  function resetChangesSidebarWidth() {
-    changesSidebarWidth = CHANGES_SIDEBAR_DEFAULT_WIDTH;
-  }
-
-  function handleChangesResizeKeys(e: KeyboardEvent) {
-    if (e.key === "ArrowLeft") {
-      e.preventDefault();
-      changesSidebarWidth = Math.max(240, changesSidebarWidth - 20);
-    } else if (e.key === "ArrowRight") {
-      e.preventDefault();
-      const maxW = changesSidebarMaxWidth(e.currentTarget as HTMLElement);
-      changesSidebarWidth = Math.min(maxW, changesSidebarWidth + 20);
-    } else if (e.key === "Home") {
-      e.preventDefault();
-      resetChangesSidebarWidth();
-    }
+  /** Max width for the commit detail pane: it is the secondary pane, so it
+   *  never takes more than ~55% of the window (capped at 720px). */
+  function commitDetailMaxWidth(): number {
+    return Math.min(720, Math.round(window.innerWidth * 0.55));
   }
 
   onMount(async () => {
@@ -1143,14 +1142,18 @@
         </div>
       {:else if $repoInfo}
         {#if activeView === "changes"}
-          <div class="changes-layout" style="--split-x: {changesSidebarWidth}px">
-            <div class="changes-sidebar" style="width: {changesSidebarWidth}px">
+          <div class="changes-layout" style:--pane-x={changesPaneX}>
+            <div class="changes-sidebar">
               <StagingArea onFileClick={handleFileClick} onNavigate={handleNavigate} selectedFile={selectedStagingFile} />
             </div>
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-            <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-            <div class="resize-handle resize-handle--bordered" class:is-dragging={isDraggingChanges} role="separator" aria-orientation="vertical" aria-label={m.resize_changes_sidebar()} tabindex="0" onmousedown={startChangesSidebarResize} ondblclick={resetChangesSidebarWidth} onkeydown={handleChangesResizeKeys}></div>
+            <ResizeHandle
+              size={$changesSidebarWidth}
+              onSizeChange={(next) => changesSidebarWidth.set(next)}
+              min={240}
+              max={changesSidebarMaxWidth}
+              label={m.resize_changes_sidebar()}
+              testid="changes-resize-handle"
+            />
             <div class="changes-diff">
               {#if $openStagingDiff && $openStagingFile}
                 <StagingDiffEditor
@@ -1254,7 +1257,16 @@
     </div>
 
     {#if activeView === "graph" && $selectedCommit}
-      <div class="graph-detail-sidebar">
+      <div class="graph-detail-sidebar" style:--pane-x={commitDetailPaneX}>
+        <ResizeHandle
+          size={$commitDetailWidth}
+          onSizeChange={(next) => commitDetailWidth.set(next)}
+          min={260}
+          max={commitDetailMaxWidth}
+          anchor="right"
+          label={m.resize_commit_detail()}
+          testid="commit-detail-resize-handle"
+        />
         <CommitDetail
           commit={$selectedCommit}
           files={$selectedCommitFiles}
@@ -1271,7 +1283,16 @@
     {/if}
 
     {#if activeView === "branches" && $branchSelectedCommit}
-      <div class="graph-detail-sidebar">
+      <div class="graph-detail-sidebar" style:--pane-x={commitDetailPaneX}>
+        <ResizeHandle
+          size={$commitDetailWidth}
+          onSizeChange={(next) => commitDetailWidth.set(next)}
+          min={260}
+          max={commitDetailMaxWidth}
+          anchor="right"
+          label={m.resize_commit_detail()}
+          testid="commit-detail-resize-handle"
+        />
         <CommitDetail
           commit={$branchSelectedCommit}
           files={$branchSelectedFiles}
@@ -1575,30 +1596,18 @@
     position: relative;
   }
 
-  /* Straddles the seam rather than sitting in it — see SplitView and
-     lib/styles/resize-handle.css for why. */
-  .changes-layout .resize-handle {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    left: var(--split-x);
-    width: 8px;
-    margin-left: -4px;
-    z-index: 2;
-  }
+  /* The handle's geometry (8px grab strip straddling the seam) and its
+     hover/drag states come from `.resize-handle--anchor-left` in
+     lib/styles/resize-handle.css — it reads `--pane-x` from this row. */
 
   .changes-sidebar {
+    width: var(--pane-x, 320px);
     flex-shrink: 0;
     /* The separator line lives on the panel, like every other split in the
        app — the handle overlaps this border rather than drawing its own. */
     border-right: 1px solid var(--border);
     overflow: hidden;
   }
-
-  /* Colours, width and hover/drag states come from the shared
-     `.resize-handle` rules in lib/styles/resize-handle.css. This one used
-     `--overlay-accent-blue`, the theme accent at 10% — a token meant for
-     selected-row backgrounds, too faint to register on a 5px strip. */
 
   .changes-diff {
     flex: 1;
@@ -1618,10 +1627,16 @@
     display: flex;
   }
 
+  /* Commit detail pane (Graph + Branches). Its width is `--pane-x`, which
+     the adjacent `ResizeHandle` also reads to find the seam — the pane
+     publishes the number, the handle consumes it, and neither can drift
+     from the other. Anchored for the handle, which is absolutely
+     positioned over the pane's left border. */
   .graph-detail-sidebar {
-    width: clamp(260px, 22vw, 360px);
+    width: var(--pane-x, clamp(260px, 22vw, 360px));
     flex-shrink: 0;
     display: flex;
+    position: relative;
   }
 
   .graph-with-diff {

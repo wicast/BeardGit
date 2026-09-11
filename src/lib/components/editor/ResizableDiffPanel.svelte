@@ -14,8 +14,9 @@
    * view switches. The diff content is provided by the caller as
    * `children`.
    */
-  import { onMount, onDestroy, type Snippet } from "svelte";
-  import { diffPanelHeight, resetDiffPanelHeight } from "$lib/stores/diffPanelSize";
+  import { onMount, type Snippet } from "svelte";
+  import { diffPanelHeight, DIFF_PANEL_DEFAULT_HEIGHT } from "$lib/stores/diffPanelSize";
+  import ResizeHandle from "$lib/components/common/ResizeHandle.svelte";
   import * as m from "$lib/paraglide/messages";
 
   interface Props {
@@ -26,7 +27,6 @@
   let { loading = false, children }: Props = $props();
 
   let rowEl: HTMLDivElement;
-  let isDraggingHeight = $state(false);
 
   const MIN_HEIGHT = 150;
   /** Keep at least this many px of the view above the panel visible. */
@@ -44,37 +44,17 @@
   // Clamp into [min(MIN, hi), hi]. On a very short window/container the upper
   // bound can fall below MIN; the lower bound is capped at `hi` so the result
   // never exceeds the cap (a naive max(MIN, min(hi, h)) would push it back up).
+  // The handle clamps drags and arrow keys against `min`/`max` (see
+  // utils/paneResize); this one is reused for the window-resize correction
+  // below, so both paths land on the same numbers.
   function clampHeight(h: number): number {
     const hi = maxHeight();
     return Math.max(Math.min(MIN_HEIGHT, hi), Math.min(hi, h));
   }
-  // Active drag teardown, so a mid-drag unmount (the panel is conditionally
-  // rendered) doesn't leak window mousemove/mouseup listeners.
-  let activeDragCleanup: (() => void) | null = null;
-
-  function startHeightResize(e: MouseEvent) {
-    e.preventDefault();
-    const startY = e.clientY;
-    const startHeight = $diffPanelHeight;
-    isDraggingHeight = true;
-    const onMove = (ev: MouseEvent) => {
-      const delta = startY - ev.clientY; // dragging up grows the panel
-      diffPanelHeight.set(clampHeight(startHeight + delta));
-    };
-    const stop = () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", stop);
-      isDraggingHeight = false;
-      activeDragCleanup = null;
-    };
-    activeDragCleanup = stop;
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", stop);
-  }
 
   // Correct a persisted oversize value on mount and whenever the window
-  // shrinks — clamping otherwise only ran inside the drag/keyboard handlers,
-  // so a panel sized large in a maximized window kept its size after a resize.
+  // shrinks — clamping otherwise only runs inside the handle, so a panel
+  // sized large in a maximized window kept its size after a resize.
   onMount(() => {
     const reclamp = () => {
       diffPanelHeight.set(clampHeight($diffPanelHeight));
@@ -84,38 +64,21 @@
     return () => window.removeEventListener("resize", reclamp);
   });
 
-  // Safety net: if the panel unmounts mid-drag, tear the window listeners down.
-  onDestroy(() => activeDragCleanup?.());
-
-  function handleHeightKeys(e: KeyboardEvent) {
-    if (e.key === "ArrowUp") {
-      e.preventDefault();
-      diffPanelHeight.set(clampHeight($diffPanelHeight + 20));
-    } else if (e.key === "ArrowDown") {
-      e.preventDefault();
-      diffPanelHeight.set(clampHeight($diffPanelHeight - 20));
-    } else if (e.key === "Home") {
-      e.preventDefault();
-      resetDiffPanelHeight();
-    }
-  }
-
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-<div
-  class="diff-resize-handle"
-  class:is-dragging={isDraggingHeight}
-  role="separator"
-  aria-orientation="horizontal"
-  aria-label={m.resize_diff_panel()}
-  tabindex="0"
-  onmousedown={startHeightResize}
-  ondblclick={resetDiffPanelHeight}
-  onkeydown={handleHeightKeys}
-></div>
+<!-- Sits above the panel it sizes and stays in flow, so its 1px separator
+     line keeps belonging to the panel's height budget — see
+     `.resize-handle--horizontal` in lib/styles/resize-handle.css. -->
+<ResizeHandle
+  size={$diffPanelHeight}
+  onSizeChange={(next) => diffPanelHeight.set(next ?? DIFF_PANEL_DEFAULT_HEIGHT)}
+  min={MIN_HEIGHT}
+  max={maxHeight}
+  defaultSize={DIFF_PANEL_DEFAULT_HEIGHT}
+  orientation="horizontal"
+  label={m.resize_diff_panel()}
+  testid="diff-panel-resize-handle"
+/>
 
 <div class="diff-row" bind:this={rowEl} style="height: {$diffPanelHeight}px">
   <div class="diff-panel" class:diff-panel-loading={loading}>
@@ -124,21 +87,6 @@
 </div>
 
 <style>
-  .diff-resize-handle {
-    height: 4px;
-    cursor: row-resize;
-    background: transparent;
-    transition: background 0.15s;
-    flex-shrink: 0;
-    border-top: 1px solid var(--border);
-  }
-  .diff-resize-handle:hover {
-    background: var(--overlay-accent-blue);
-  }
-  .diff-resize-handle.is-dragging {
-    background: var(--accent-primary);
-  }
-
   .diff-row {
     display: flex;
     flex-shrink: 0;

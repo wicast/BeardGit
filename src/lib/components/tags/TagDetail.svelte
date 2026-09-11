@@ -7,6 +7,7 @@
   import EmptyState from "../common/EmptyState.svelte";
   import DiffEditor from "../editor/DiffEditor.svelte";
   import CommitDetail from "../detail/CommitDetail.svelte";
+  import TagPushRemoteSelect from "./TagPushRemoteSelect.svelte";
   import { formatRelativeTime, formatDate } from "../../utils/time";
   import { getCommitDetail, getCommitFiles } from "../../api/tauri";
   import { navigateToCommit, fetchDiffSides } from "../../stores/graph";
@@ -24,6 +25,7 @@
     doDeleteTag,
     doPushTag,
   } from "../../stores/tags";
+  import { tagPushRemote } from "../../stores/tagPushRemote";
 
   let confirmDelete = $state(false);
   let fileDiff = $state<RawDiffContent | null>(null);
@@ -227,15 +229,29 @@
 
     <!-- Actions footer -->
     <div class="detail-actions">
-      <Button variant="primary" size="sm" onclick={async () => {
-          try {
-            await doPushTag($selectedTagInfo!.name, "origin");
-          } catch {
-            // runMutation already surfaced the failure toast.
-          }
-        }}>
-        {m.tags_action_push()}
-      </Button>
+      <div class="push-group">
+        <Button
+          variant="primary"
+          size="sm"
+          disabled={$tagPushRemote === null}
+          description={$tagPushRemote === null
+            ? m.tags_push_no_remote()
+            : m.tags_push_to_remote({ remote: $tagPushRemote })}
+          testid="tag-detail-push"
+          onclick={async () => {
+            if (!$tagPushRemote) return;
+            try {
+              await doPushTag($selectedTagInfo!.name, $tagPushRemote);
+            } catch {
+              // runMutation already surfaced the failure toast.
+            }
+          }}
+        >
+          {m.tags_action_push()}
+        </Button>
+        <!-- The same picker, over the same store, as the list footer. -->
+        <TagPushRemoteSelect testid="tag-detail-remote" />
+      </div>
       <Button variant="danger" size="sm" onclick={() => (confirmDelete = true)}>
         {m.tags_action_delete()}
       </Button>
@@ -499,11 +515,19 @@
   .detail-actions {
     display: flex;
     justify-content: flex-end;
+    align-items: center;
     gap: 8px;
     padding: 10px 16px;
     border-top: 1px solid var(--border);
     background: var(--bg-secondary);
     flex-shrink: 0;
+  }
+
+  /* Push and its remote picker are one control group; Delete is separate. */
+  .push-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
   }
 
 </style>

@@ -102,6 +102,26 @@ function isInputFocused(): boolean {
   return false;
 }
 
+/**
+ * Check whether the focused element is a window splitter — a draggable pane
+ * edge (`role="separator"`, see `components/common/ResizeHandle.svelte`).
+ *
+ * These answer arrow keys and Home themselves: WAI-ARIA's window-splitter
+ * pattern is exactly that contract, and Home resets the pane to its default
+ * width. But this listener runs in the **capture** phase and calls
+ * `stopPropagation()`, so a bare-key shortcut with the same binding wins the
+ * race and the focused handle never receives the key at all — `Home` is
+ * `graph.first`, which silently made "reset this pane" dead in every
+ * resizable pane in the app while quietly jumping the graph to the first
+ * commit instead.
+ *
+ * Only bare-key shortcuts are suppressed by this, same as inputs: a
+ * modified binding (Cmd+…) still fires, so nothing becomes unreachable.
+ */
+function isSplitterFocused(): boolean {
+  return document.activeElement?.getAttribute("role") === "separator";
+}
+
 /** Check if a KeyboardEvent matches a ShortcutKeys descriptor. */
 function matchesKeys(e: KeyboardEvent, keys: ShortcutKeys): boolean {
   const modPressed = isMac ? e.metaKey : e.ctrlKey;
@@ -133,10 +153,13 @@ export function initShortcutListener(): () => void {
     for (const shortcut of list) {
       if (!matchesKeys(e, shortcut.keys)) continue;
 
-      // Bare-key shortcuts (no mod) only fire when no input focused,
-      // unless marked as global (e.g. help shortcut).
+      // Bare-key shortcuts (no mod) only fire when no input is focused —
+      // or a focused pane edge, which owns the same keys — unless marked as
+      // global (e.g. help shortcut).
       const hasModifier = shortcut.keys.mod || shortcut.keys.alt;
-      if (!hasModifier && !shortcut.global && isInputFocused()) continue;
+      if (!hasModifier && !shortcut.global && (isInputFocused() || isSplitterFocused())) {
+        continue;
+      }
 
       e.preventDefault();
       e.stopPropagation();

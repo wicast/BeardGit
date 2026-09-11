@@ -8,6 +8,10 @@
  * switches between views (each view mounts a fresh panel instance, but
  * they should all open at the size the user last set). Kept in memory
  * only, matching the previous behaviour where the height reset on restart.
+ *
+ * Resetting (double-click or Home on the handle) is the handle's own
+ * `defaultSize`, so there is no reset function here to drift out of sync
+ * with it.
  */
 
 import { writable } from "svelte/store";
@@ -17,9 +21,3 @@ export const DIFF_PANEL_DEFAULT_HEIGHT = 250;
 
 /** Current panel height in px. */
 export const diffPanelHeight = writable<number>(DIFF_PANEL_DEFAULT_HEIGHT);
-
-/** Restore the default height (bound to the height handle's double-click). */
-export function resetDiffPanelHeight(): void {
-  diffPanelHeight.set(DIFF_PANEL_DEFAULT_HEIGHT);
-}
-

@@ -15,14 +15,21 @@
     doDeleteTag,
     doPushTag,
   } from "../../stores/tags";
+  import { remotes } from "../../stores/remotes";
+  import { tagPushRemote } from "../../stores/tagPushRemote";
   import TagCreateDialog from "./TagCreateDialog.svelte";
+  import TagPushRemoteSelect from "./TagPushRemoteSelect.svelte";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
+  import ContextMenu from "../common/ContextMenu.svelte";
   import List from "../common/List.svelte";
   import { Button, IconButton } from "$lib/components/ui";
   import { formatRelativeTime } from "../../utils/time";
   import { debounce } from "../../utils/debounce";
+  import type { MenuItem } from "../common/ContextMenu.svelte";
   import type { TagInfo } from "../../types";
   import { scoped } from "$lib/stores/viewMemory";
+  import { navigateToCommit } from "../../stores/graph";
+  import { activeViewStore } from "../../stores/navigation";
 
   let loadingMore = $state(false);
   let showCreateDialog = $state(false);
@@ -31,6 +38,13 @@
   // empty input over a filtered list read as the app losing the filter.
   let filterValue = $state($tagFilter);
   let searchingBackend = $state(false);
+
+  // ── Row context menu ─────────────────────────────────────────────────
+  let menuVisible = $state(false);
+  let menuX = $state(0);
+  let menuY = $state(0);
+  /** The tag the menu was opened on; `null` while the menu is closed. */
+  let contextTag = $state<TagInfo | null>(null);
 
   const debouncedBackendSearch = debounce(async (value: string) => {
     if (value.length >= 2 && $filteredTags.length === 0) {
@@ -74,6 +88,89 @@
   function handleSelect(tag: TagInfo) {
     selectTag(tag.name);
   }
+
+  /**
+   * Push one tag. `remote` is explicit because the context menu can target
+   * any remote; the row's hover button and the footers use the shared
+   * default from `stores/tagPushRemote`.
+   *
+   * No success toast here (nor in `doPushTag`): the push runs as a
+   * `GitPush` task, so the drawer row reaching a terminal state is the
+   * confirmation.
+   */
+  async function pushTag(name: string | null, remote: string) {
+    try {
+      await doPushTag(name, remote);
+    } catch {
+      // runMutation already surfaced the failure toast.
+    }
+  }
+
+  function handleContextMenu(e: MouseEvent, tag: TagInfo) {
+    contextTag = tag;
+    menuX = e.clientX;
+    menuY = e.clientY;
+    menuVisible = true;
+  }
+
+  /**
+   * "Push" menu item. One remote fires directly; several open a submenu, so
+   * the target is always named before the click — mirroring `BranchList`.
+   */
+  function pushMenuItem(tag: TagInfo): MenuItem {
+    const rs = $remotes;
+    if (rs.length === 1) {
+      const remote = rs[0].name;
+      return {
+        label: m.tags_push_to_remote({ remote }),
+        action: () => pushTag(tag.name, remote),
+      };
+    }
+    return {
+      label: m.tags_action_push(),
+      children: rs.map((remote) => ({
+        label: remote.name,
+        action: () => pushTag(tag.name, remote.name),
+      })),
+    };
+  }
+
+  function showCommitInGraph(oid: string) {
+    void navigateToCommit(oid);
+    // Selects the commit in the graph store; without the view switch the
+    // selection changes behind a Tags view that never visibly moves.
+    activeViewStore.set("graph");
+  }
+
+  let menuItems = $derived.by((): MenuItem[] => {
+    const tag = contextTag;
+    if (!tag) return [];
+    const items: MenuItem[] = [];
+    if ($remotes.length > 0) {
+      items.push(pushMenuItem(tag), { separator: true });
+    }
+    items.push(
+      {
+        label: m.tags_menu_copy_name(),
+        action: () => void navigator.clipboard?.writeText(tag.name),
+      },
+      {
+        label: m.tags_menu_copy_sha({ sha: tag.commit_oid.slice(0, 8) }),
+        action: () => void navigator.clipboard?.writeText(tag.commit_oid),
+      },
+      {
+        label: m.tags_menu_show_in_graph(),
+        action: () => showCommitInGraph(tag.commit_oid),
+      },
+      { separator: true },
+      {
+        label: m.tags_action_delete(),
+        tone: "danger",
+        action: () => (confirmDelete = tag.name),
+      },
+    );
+    return items;
+  });
 </script>
 
 <List
@@ -84,6 +181,7 @@
   {getKey}
   emptyMessage={m.tags_empty()}
   onSelect={handleSelect}
+  onContextMenu={handleContextMenu}
   memoryKey={scoped("tags.list")}
 >
   {#snippet headerActions()}
@@ -141,13 +239,13 @@
             <Button
               variant="primary"
               size="sm"
-              onclick={async (e: MouseEvent) => {
+              disabled={$tagPushRemote === null}
+              description={$tagPushRemote === null
+                ? m.tags_push_no_remote()
+                : m.tags_push_to_remote({ remote: $tagPushRemote })}
+              onclick={(e: MouseEvent) => {
                 e.stopPropagation();
-                try {
-                  await doPushTag(item.name, "origin");
-                } catch {
-                  // runMutation already surfaced the failure toast.
-                }
+                if ($tagPushRemote) pushTag(item.name, $tagPushRemote);
               }}
             >{m.tags_action_push()}</Button>
             <Button
@@ -170,22 +268,33 @@
         </Button>
       {/if}
 
-      <Button
-        variant="primary"
-        size="sm"
-        onclick={async () => {
-          try {
-            await doPushTag(null, "origin");
-          } catch {
-            // runMutation already surfaced the failure toast.
-          }
-        }}
-      >
-        {m.tags_push_all_button()}
-      </Button>
+      <div class="push-all">
+        <Button
+          variant="primary"
+          size="sm"
+          disabled={$tagPushRemote === null}
+          description={$tagPushRemote === null
+            ? m.tags_push_no_remote()
+            : m.tags_push_to_remote({ remote: $tagPushRemote })}
+          onclick={() => { if ($tagPushRemote) pushTag(null, $tagPushRemote); }}
+        >
+          {m.tags_push_all_button()}
+        </Button>
+        <!-- Shares its selection with the tag detail footer — see
+             `stores/tagPushRemote`. -->
+        <TagPushRemoteSelect testid="tag-push-all-remote" />
+      </div>
     </div>
   {/snippet}
 </List>
+
+<ContextMenu
+  items={menuItems}
+  x={menuX}
+  y={menuY}
+  visible={menuVisible}
+  onClose={() => (menuVisible = false)}
+/>
 
 {#if showCreateDialog}
   <TagCreateDialog onClose={() => (showCreateDialog = false)} />
@@ -290,8 +399,21 @@
   .tags-footer {
     display: flex;
     justify-content: center;
+    /* Wraps rather than squeezing: the footer is two controls per row now
+       (push-all + its remote picker, plus "load more"), and a narrow list
+       pane would otherwise clip the picker. */
+    flex-wrap: wrap;
+    align-items: center;
     gap: 8px;
     padding: 10px;
     border-top: 1px solid var(--border);
+  }
+
+  /* The button and its remote picker are one control group. */
+  .push-all {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
   }
 </style>

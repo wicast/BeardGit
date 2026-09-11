@@ -7,6 +7,8 @@
   import { type SidebarNavItem } from "../../utils/applyLayout";
   import { addToast } from "../../stores/toast";
   import { IconButton } from "$lib/components/ui";
+  import ResizeHandle from "../common/ResizeHandle.svelte";
+  import { remembered } from "../../stores/viewMemory";
   import * as m from "$lib/paraglide/messages";
 
   let {
@@ -41,6 +43,52 @@
   // Edit-mode state.
   let editMode = $state(false);
   let sidebarEl: HTMLElement | undefined = $state();
+
+  /**
+   * Navigation width, drag-resizable since the labels are the first thing
+   * that stops fitting at 15vw on a narrow window.
+   *
+   * `null` until the user drags: the width stays the responsive
+   * `clamp()` it has always been, so a pane nobody has resized keeps
+   * behaving like a fluid layout instead of freezing into the px value it
+   * happened to render at on mount. `remembered` (RAM-only session memory,
+   * like every other split in the app) carries the dragged value across
+   * view switches; collapsing is unaffected — it still pins 44px.
+   */
+  const NAV_DEFAULT_WIDTH = "clamp(180px, 15vw, 240px)";
+  const navWidth = remembered<number | null>("layout.navSidebarWidth", null);
+  let navPaneX = $derived($navWidth === null ? NAV_DEFAULT_WIDTH : `${$navWidth}px`);
+
+  /**
+   * True for the duration of a collapse/expand, which is the *only* width
+   * change that animates.
+   *
+   * The `transition: width 150ms` this gates was written for that toggle and
+   * then quietly applied to everything: a drag ran the pane 150ms behind the
+   * cursor (until the drag state suppressed it), an arrow-key nudge settled
+   * visibly late, and — the one that actually breaks — a reset followed by a
+   * fresh grab measured the pane mid-animation and started the new drag from
+   * a width it was never at. Scoping the transition to the toggle keeps the
+   * animation where it was wanted and makes every user-driven width change
+   * land on the frame it was asked for.
+   */
+  let animatingCollapse = $state(false);
+  // svelte-ignore state_referenced_locally
+  // Seeded with the current value on purpose: this only ever holds the
+  // *previous* `collapsed`, to tell a toggle apart from a re-render.
+  let wasCollapsed = collapsed;
+  $effect(() => {
+    if (wasCollapsed === collapsed) return;
+    wasCollapsed = collapsed;
+    animatingCollapse = true;
+    const timer = setTimeout(() => (animatingCollapse = false), 200);
+    return () => clearTimeout(timer);
+  });
+
+  /** Half the window at most: the nav may never crowd out the view it navigates. */
+  function navMaxWidth(): number {
+    return Math.min(480, Math.round(window.innerWidth * 0.5));
+  }
 
   const itemById = new Map(navItems.map((i) => [i.id, i]));
 
@@ -212,176 +260,196 @@
   });
 </script>
 
-<aside
-  class="sidebar"
-  class:collapsed
-  class:edit-mode={editMode}
-  bind:this={sidebarEl}
->
-  <nav class="nav-section">
-    {#if !collapsed}
-      <div class="section-label nav-header">
-        <span>{m.sidebar_navigation()}</span>
-        {#if editMode}
-          <span class="edit-actions">
-            <button
-              type="button"
-              class="edit-action"
-              data-testid="sidebar-edit-reset"
-              onclick={resetLayout}
-            >{m.sidebar_reset()}</button>
-            <button
-              type="button"
-              class="edit-action primary"
-              data-testid="sidebar-edit-done"
-              onclick={() => (editMode = false)}
-            >{m.sidebar_done()}</button>
-          </span>
-        {:else}
-          <IconButton
-            icon={"\uF040"}
-            description={m.tooltip_customize_sidebar()}
-            size="sm"
-            testid="sidebar-edit-toggle"
-            onclick={() => (editMode = true)}
-          />
-        {/if}
-      </div>
-    {/if}
+<!-- The shell exists only to anchor the resize handle: the handle has to sit
+     outside `<aside>`'s `overflow-y: auto` scroll container, or it would
+     scroll away with the nav list instead of staying on the seam. -->
+<div class="sidebar-shell" style:--pane-x={navPaneX}>
+  <aside
+    class="sidebar"
+    class:collapsed
+    class:animating={animatingCollapse}
+    class:edit-mode={editMode}
+    bind:this={sidebarEl}
+  >
+    <nav class="nav-section">
+      {#if !collapsed}
+        <div class="section-label nav-header">
+          <span>{m.sidebar_navigation()}</span>
+          {#if editMode}
+            <span class="edit-actions">
+              <button
+                type="button"
+                class="edit-action"
+                data-testid="sidebar-edit-reset"
+                onclick={resetLayout}
+              >{m.sidebar_reset()}</button>
+              <button
+                type="button"
+                class="edit-action primary"
+                data-testid="sidebar-edit-done"
+                onclick={() => (editMode = false)}
+              >{m.sidebar_done()}</button>
+            </span>
+          {:else}
+            <IconButton
+              icon={"\uF040"}
+              description={m.tooltip_customize_sidebar()}
+              size="sm"
+              testid="sidebar-edit-toggle"
+              onclick={() => (editMode = true)}
+            />
+          {/if}
+        </div>
+      {/if}
 
-    {#if editMode}
-      <div class="sr-only" role="status" aria-live="polite">
-        {m.sidebar_customize()}. Press Escape to finish.
-      </div>
-      {#each editGroups as group (group.key)}
-        <div class="group-label">{group.label}</div>
-        {#each group.items as item (item.id)}
-          {@const isHidden = $sidebarLayout.hidden.includes(item.id)}
-          {@const visibleCount = navItems.length - $sidebarLayout.hidden.length}
-          {@const isLastVisible = !isHidden && visibleCount <= 1}
-          <div
-            class="nav-item edit-row"
-            class:nav-item--hidden={isHidden}
-            data-testid="nav-{item.id}"
-          >
-            <span class="nav-icon">{item.icon}</span>
-            <span class="nav-label">{item.label}</span>
-            <button
-              type="button"
-              class="eye-toggle"
-              data-testid="sidebar-hide-{item.id}"
-              aria-pressed={!isHidden}
-              aria-disabled={isLastVisible}
-              disabled={isLastVisible}
-              aria-label={isHidden
-                ? m.sidebar_show_aria({ label: item.label })
-                : m.sidebar_hide_aria({ label: item.label })}
-              onclick={() => toggleHidden(item.id)}
-            >{isHidden ? "" : ""}</button>
-          </div>
+      {#if editMode}
+        <div class="sr-only" role="status" aria-live="polite">
+          {m.sidebar_customize()}. Press Escape to finish.
+        </div>
+        {#each editGroups as group (group.key)}
+          <div class="group-label">{group.label}</div>
+          {#each group.items as item (item.id)}
+            {@const isHidden = $sidebarLayout.hidden.includes(item.id)}
+            {@const visibleCount = navItems.length - $sidebarLayout.hidden.length}
+            {@const isLastVisible = !isHidden && visibleCount <= 1}
+            <div
+              class="nav-item edit-row"
+              class:nav-item--hidden={isHidden}
+              data-testid="nav-{item.id}"
+            >
+              <span class="nav-icon">{item.icon}</span>
+              <span class="nav-label">{item.label}</span>
+              <button
+                type="button"
+                class="eye-toggle"
+                data-testid="sidebar-hide-{item.id}"
+                aria-pressed={!isHidden}
+                aria-disabled={isLastVisible}
+                disabled={isLastVisible}
+                aria-label={isHidden
+                  ? m.sidebar_show_aria({ label: item.label })
+                  : m.sidebar_hide_aria({ label: item.label })}
+                onclick={() => toggleHidden(item.id)}
+              >{isHidden ? "" : ""}</button>
+            </div>
+          {/each}
         {/each}
-      {/each}
-    {:else if collapsed}
-      {#each visibleFlat as item (item.id)}
-        <button
-          class="nav-item"
-          class:active={activeView === item.id}
-          onclick={() => { hideTip(); handleNav(item.id); }}
-          onmouseenter={(e) => showTip(e, item.label)}
-          onmouseleave={hideTip}
-          onfocusin={(e) => showTip(e, item.label)}
-          onfocusout={hideTip}
-          aria-label={item.label}
-          data-testid="nav-{item.id}"
-        >
-          <span class="nav-icon">{item.icon}</span>
-        </button>
-      {/each}
-    {:else}
-      {#each visibleGroups as group (group.key)}
-        <div class="group-label">{group.label}</div>
-        {#each group.items as item (item.id)}
+      {:else if collapsed}
+        {#each visibleFlat as item (item.id)}
           <button
             class="nav-item"
             class:active={activeView === item.id}
             onclick={() => { hideTip(); handleNav(item.id); }}
+            onmouseenter={(e) => showTip(e, item.label)}
+            onmouseleave={hideTip}
+            onfocusin={(e) => showTip(e, item.label)}
+            onfocusout={hideTip}
+            aria-label={item.label}
             data-testid="nav-{item.id}"
           >
             <span class="nav-icon">{item.icon}</span>
-            <span class="nav-label">{item.label}</span>
-            {#if item.id === "changes" && changeCount > 0}
-              <span class="nav-badge">{changeCount}</span>
+          </button>
+        {/each}
+      {:else}
+        {#each visibleGroups as group (group.key)}
+          <div class="group-label">{group.label}</div>
+          {#each group.items as item (item.id)}
+            <button
+              class="nav-item"
+              class:active={activeView === item.id}
+              onclick={() => { hideTip(); handleNav(item.id); }}
+              data-testid="nav-{item.id}"
+            >
+              <span class="nav-icon">{item.icon}</span>
+              <span class="nav-label">{item.label}</span>
+              {#if item.id === "changes" && changeCount > 0}
+                <span class="nav-badge">{changeCount}</span>
+              {/if}
+            </button>
+          {/each}
+        {/each}
+      {/if}
+    </nav>
+
+    {#if $hasActiveProvider}
+      <nav class="nav-section">
+        {#if !collapsed}
+          <div class="section-label">
+            <span class="provider-status-dot connected"></span>
+            {$activeProvider?.kind === 'github' ? m.provider_github() : m.provider_gitlab()}
+          </div>
+        {/if}
+        {#each providerItems as item}
+          <button
+            class="nav-item"
+            class:active={activeView === item.id}
+            onclick={() => { hideTip(); handleNav(item.id); }}
+            onmouseenter={(e) => showTip(e, item.label)}
+            onmouseleave={hideTip}
+            onfocusin={(e) => showTip(e, item.label)}
+            onfocusout={hideTip}
+            aria-label={collapsed ? item.label : undefined}
+            data-testid="nav-{item.id}"
+          >
+            <span class="nav-icon">{item.icon}</span>
+            {#if !collapsed}
+              <span class="nav-label">{item.label}</span>
             {/if}
           </button>
         {/each}
-      {/each}
+      </nav>
     {/if}
-  </nav>
 
-  {#if $hasActiveProvider}
-    <nav class="nav-section">
-      {#if !collapsed}
-        <div class="section-label">
-          <span class="provider-status-dot connected"></span>
-          {$activeProvider?.kind === 'github' ? m.provider_github() : m.provider_gitlab()}
-        </div>
-      {/if}
-      {#each providerItems as item}
-        <button
-          class="nav-item"
-          class:active={activeView === item.id}
-          onclick={() => { hideTip(); handleNav(item.id); }}
-          onmouseenter={(e) => showTip(e, item.label)}
-          onmouseleave={hideTip}
-          onfocusin={(e) => showTip(e, item.label)}
-          onfocusout={hideTip}
-          aria-label={collapsed ? item.label : undefined}
-          data-testid="nav-{item.id}"
-        >
-          <span class="nav-icon">{item.icon}</span>
-          {#if !collapsed}
-            <span class="nav-label">{item.label}</span>
-          {/if}
-        </button>
-      {/each}
-    </nav>
+    <div class="spacer"></div>
+
+    <div class="nav-section bottom-section">
+      <button
+        class="nav-item"
+        class:active={activeView === "settings"}
+        onclick={() => { hideTip(); handleNav("settings"); }}
+        onmouseenter={(e) => showTip(e, m.sidebar_settings())}
+        onmouseleave={hideTip}
+        onfocusin={(e) => showTip(e, m.sidebar_settings())}
+        onfocusout={hideTip}
+        aria-label={collapsed ? m.sidebar_settings() : undefined}
+        data-testid="nav-settings"
+      >
+        <span class="nav-icon">{""}</span>
+        {#if !collapsed}
+          <span class="nav-label">{m.sidebar_settings()}</span>
+        {/if}
+      </button>
+      <button
+        class="nav-item collapse-btn"
+        onclick={() => { hideTip(); onToggleCollapse?.(); }}
+        onmouseenter={(e) => showTip(e, m.sidebar_expand())}
+        onmouseleave={hideTip}
+        onfocusin={(e) => showTip(e, m.sidebar_expand())}
+        onfocusout={hideTip}
+        aria-label={collapsed ? m.sidebar_expand() : undefined}
+      >
+        <span class="nav-icon">{collapsed ? "" : ""}</span>
+        {#if !collapsed}
+          <span class="nav-label">{m.sidebar_collapse()}</span>
+        {/if}
+      </button>
+    </div>
+  </aside>
+
+  <!-- No handle while collapsed: the width is pinned at 44px, so a drag
+       would have nowhere to go and the grab strip would sit on top of the
+       icon rail. -->
+  {#if !collapsed}
+    <ResizeHandle
+      size={$navWidth}
+      onSizeChange={(next) => navWidth.set(next)}
+      min={160}
+      max={navMaxWidth}
+      label={m.resize_nav_sidebar()}
+      testid="nav-resize-handle"
+    />
   {/if}
-
-  <div class="spacer"></div>
-
-  <div class="nav-section bottom-section">
-    <button
-      class="nav-item"
-      class:active={activeView === "settings"}
-      onclick={() => { hideTip(); handleNav("settings"); }}
-      onmouseenter={(e) => showTip(e, m.sidebar_settings())}
-      onmouseleave={hideTip}
-      onfocusin={(e) => showTip(e, m.sidebar_settings())}
-      onfocusout={hideTip}
-      aria-label={collapsed ? m.sidebar_settings() : undefined}
-      data-testid="nav-settings"
-    >
-      <span class="nav-icon">{""}</span>
-      {#if !collapsed}
-        <span class="nav-label">{m.sidebar_settings()}</span>
-      {/if}
-    </button>
-    <button
-      class="nav-item collapse-btn"
-      onclick={() => { hideTip(); onToggleCollapse?.(); }}
-      onmouseenter={(e) => showTip(e, m.sidebar_expand())}
-      onmouseleave={hideTip}
-      onfocusin={(e) => showTip(e, m.sidebar_expand())}
-      onfocusout={hideTip}
-      aria-label={collapsed ? m.sidebar_expand() : undefined}
-    >
-      <span class="nav-icon">{collapsed ? "" : ""}</span>
-      {#if !collapsed}
-        <span class="nav-label">{m.sidebar_collapse()}</span>
-      {/if}
-    </button>
-  </div>
-</aside>
+</div>
 
 {#if collapsedTip}
   <span
@@ -392,8 +460,19 @@
 {/if}
 
 <style>
+  /* Anchors the resize handle, which is positioned over the seam rather
+     than laid out in it (see `lib/styles/resize-handle.css`). */
+  .sidebar-shell {
+    position: relative;
+    display: flex;
+    flex-shrink: 0;
+  }
+
   .sidebar {
-    width: clamp(180px, 15vw, 240px);
+    /* `--pane-x` is the one place this width lives: the handle reads it to
+       find the seam, and the shell's inline style overrides it once the
+       user has dragged. */
+    width: var(--pane-x, clamp(180px, 15vw, 240px));
     min-width: 0;
     flex-shrink: 0;
     background: var(--bg-secondary);
@@ -402,6 +481,11 @@
     flex-direction: column;
     overflow-y: auto;
     user-select: none;
+  }
+
+  /* Collapse/expand animates; every user-driven width change is instant —
+     see `animatingCollapse`. */
+  .sidebar.animating {
     transition: width 150ms ease;
   }
 
