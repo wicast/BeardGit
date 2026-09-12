@@ -593,7 +593,10 @@
   .branch-list {
     display: flex;
     flex-direction: column;
-    flex: 1;
+    /* Parent (.split-sidebar) is a plain block with a definite height, so
+     * flex:1 does nothing here — without an explicit height the wrapper
+     * grows with its content and .split-sidebar clips the overflow. */
+    height: 100%;
     min-height: 0;
     min-width: 0;
   }
