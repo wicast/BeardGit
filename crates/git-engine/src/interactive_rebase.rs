@@ -59,7 +59,9 @@ impl Repository {
         let result = self.git_cmd(&[
             "log",
             "--reverse",
-            "--format=%H|%s|%an|%ai",
+            // `%aI` (strict ISO 8601), not `%ai` — the struct doc promises
+            // ISO-8601 and WebKit's `new Date()` rejects the `%ai` form.
+            "--format=%H|%s|%an|%aI",
             &format!("{base_oid}..HEAD"),
         ])?;
 

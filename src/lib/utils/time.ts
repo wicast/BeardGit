@@ -83,6 +83,10 @@ export function formatRelativeTime(dateStr: string | null | undefined): string {
   if (!dateStr) return "";
   const date = new Date(dateStr);
   const timestamp = date.getTime() / 1000;
+  // Unparseable strings yield NaN, and RelativeTimeFormat.format(NaN) throws
+  // a RangeError that tears down the whole rendering tree — degrade to an
+  // empty label instead.
+  if (!Number.isFinite(timestamp)) return "";
   return formatRelativeTimeUnix(timestamp);
 }
 

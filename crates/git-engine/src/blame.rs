@@ -85,11 +85,14 @@ impl Repository {
     ) -> Result<Vec<FileHistoryEntry>, GitError> {
         let limit_str = limit.unwrap_or(100).to_string();
         let max_count_arg = format!("--max-count={limit_str}");
+        // `%aI` (strict ISO 8601), not `%ai`: WebKit's `new Date()` rejects
+        // the `%ai` form ("2025-04-01 12:00:00 +0000"), which crashes the
+        // history panel's relative-time formatting on macOS.
         let result = self.git_cmd(&[
             "log",
             "--follow",
             &max_count_arg,
-            "--format=%H|%s|%an|%ai",
+            "--format=%H|%s|%an|%aI",
             "--numstat",
             "--",
             path,
@@ -196,10 +199,10 @@ fn parse_blame_porcelain(output: &str) -> Vec<BlameLine> {
     lines
 }
 
-/// Parse `git log --follow --format=%H|%s|%an|%ai --numstat` output into
+/// Parse `git log --follow --format=%H|%s|%an|%aI --numstat` output into
 /// structured file history entries.
 ///
-/// Each commit appears as a `%H|%s|%an|%ai` line followed by a blank line and
+/// Each commit appears as a `%H|%s|%an|%aI` line followed by a blank line and
 /// a numstat line (`additions\tdeletions\tpath`). Renames appear as
 /// `old => new` in the path column.
 fn parse_file_history(output: &str) -> Vec<FileHistoryEntry> {
@@ -359,11 +362,11 @@ aaa1234567890123456789012345678901234567 3 3
     #[test]
     fn test_parse_file_history() {
         let output = "\
-abc1234567890123456789012345678901234567|feat: add feature|John|2025-04-01 12:00:00 +0000
+abc1234567890123456789012345678901234567|feat: add feature|John|2025-04-01T12:00:00+00:00
 
 5\t3\tsrc/file.rs
 
-def1234567890123456789012345678901234567|fix: bug fix|Jane|2025-04-02 10:00:00 +0000
+def1234567890123456789012345678901234567|fix: bug fix|Jane|2025-04-02T10:00:00+00:00
 
 2\t1\tsrc/file.rs
 ";
@@ -374,7 +377,7 @@ def1234567890123456789012345678901234567|fix: bug fix|Jane|2025-04-02 10:00:00 +
         assert_eq!(entries[0].oid, "abc1234567890123456789012345678901234567");
         assert_eq!(entries[0].message, "feat: add feature");
         assert_eq!(entries[0].author, "John");
-        assert_eq!(entries[0].date, "2025-04-01 12:00:00 +0000");
+        assert_eq!(entries[0].date, "2025-04-01T12:00:00+00:00");
         assert_eq!(entries[0].additions, 5);
         assert_eq!(entries[0].deletions, 3);
         assert!(entries[0].old_path.is_none());
@@ -389,7 +392,7 @@ def1234567890123456789012345678901234567|fix: bug fix|Jane|2025-04-02 10:00:00 +
     #[test]
     fn test_parse_file_history_with_rename() {
         let output = "\
-abc1234567890123456789012345678901234567|refactor: rename module|Alice|2025-04-03 08:00:00 +0000
+abc1234567890123456789012345678901234567|refactor: rename module|Alice|2025-04-03T08:00:00+00:00
 
 10\t5\tsrc/old_file.rs => src/new_file.rs
 ";
