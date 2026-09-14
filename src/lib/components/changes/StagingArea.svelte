@@ -1,12 +1,12 @@
 <script lang="ts">
-  import { fileStatuses, unstagedStats, stagedStats, stageFiles, unstageFiles, commit, amendCommit, refreshStatuses, refreshDiffs } from "../../stores/changes";
+  import { fileStatuses, unstagedStats, stagedStats, stageFiles, unstageFiles, commit, undoLastCommit, refreshStatuses, refreshDiffs } from "../../stores/changes";
   import type { FileDiffStat } from "$lib/types";
   import ChangesList from "./ChangesList.svelte";
   import CleanDialog from "./CleanDialog.svelte";
   import { onMount, onDestroy } from "svelte";
   import type { UnlistenFn } from "@tauri-apps/api/event";
   import * as m from "$lib/paraglide/messages";
-  import { getHeadMessage, createWorkingTreePatch, savePatchToFile, pushRemote, saveAiReview, getSigningConfig, getTasks, getTaskOutput } from "$lib/api/tauri";
+  import { createWorkingTreePatch, savePatchToFile, pushRemote, saveAiReview, getSigningConfig, getTasks, getTaskOutput } from "$lib/api/tauri";
   import { getErrorMessage } from "$lib/api/errors";
   import type { SigningStatus, TaskInfo } from "$lib/types";
   import { formatSigningBackend } from "$lib/utils/signing";
@@ -24,7 +24,7 @@
   import { stripAnsi } from "$lib/utils/strip-ansi";
   import { listen } from "@tauri-apps/api/event";
   import { save } from "@tauri-apps/plugin-dialog";
-  import { Button, Checkbox, IconButton } from "$lib/components/ui";
+  import { Button, IconButton } from "$lib/components/ui";
 
   let {
     onFileClick,
@@ -48,7 +48,6 @@
   let draft = $derived($commitDrafts[projectPath] ?? EMPTY_DRAFT);
   let summary = $derived(draft.summary);
   let description = $derived(draft.description);
-  let isAmend = $derived(draft.isAmend);
   let aiCommitLoading = $derived(projectPath ? ($aiCommitGenerating[projectPath] ?? false) : false);
 
   /** Join summary + body into a git commit message (body optional). */
@@ -140,23 +139,26 @@
   let unstagedStatMap = $derived(toStatMap($unstagedStats));
   let showCleanDialog = $state(false);
 
-  async function handleAmendToggle() {
-    if (isAmend) {
-      // Stash what the user had typed so flipping amend off restores it.
-      updateDraft({ savedSummary: summary, savedDescription: description });
-      try {
-        const parts = splitMessage(await getHeadMessage());
-        updateDraft({ summary: parts.summary, description: parts.description });
-      } catch {
-        updateDraft({ summary: "", description: "" });
-      }
-    } else {
-      updateDraft({
-        summary: draft.savedSummary,
-        description: draft.savedDescription,
-        savedSummary: "",
-        savedDescription: "",
-      });
+  let undoInProgress = $state(false);
+  /** Disabled when there is no HEAD commit to undo. */
+  let canUndoCommit = $derived(!!$repoInfo?.head_oid && !undoInProgress);
+
+  /**
+   * Undo the tip commit: soft-reset (or drop the first commit's branch),
+   * leave its files staged, and pre-fill the commit box with its message.
+   * The user then edits and creates a normal replacement commit.
+   */
+  async function handleUndoLastCommit() {
+    if (!canUndoCommit) return;
+    undoInProgress = true;
+    try {
+      const message = await undoLastCommit();
+      const parts = splitMessage(message);
+      updateDraft({ summary: parts.summary, description: parts.description });
+    } catch {
+      // runMutation already surfaced the failure toast.
+    } finally {
+      undoInProgress = false;
     }
   }
 
@@ -348,24 +350,18 @@
   async function handleCommit() {
     const msg = composedMessage();
     if (!msg) return;
-    if (isAmend) {
-      await amendCommit(msg);
-    } else {
-      await commit(msg);
-    }
-    summary = "";
-    description = "";
-    isAmend = false;
+    await commit(msg);
+    clearDraft(projectPath);
   }
 
-  // Commit is allowed once there's a summary and (unless amending) at least
-  // one staged file. The reason surfaces below the button so the disabled
-  // state is explained rather than just greyed out.
-  let canCommit = $derived(summary.trim().length > 0 && (isAmend || staged.length > 0));
+  // Commit is allowed once there's a summary and at least one staged file.
+  // The reason surfaces below the button so the disabled state is explained
+  // rather than just greyed out.
+  let canCommit = $derived(summary.trim().length > 0 && staged.length > 0);
   let commitDisabledReason = $derived(
     summary.trim().length === 0
       ? m.staging_hint_need_summary()
-      : (!isAmend && staged.length === 0)
+      : staged.length === 0
         ? m.staging_hint_nothing_staged()
         : "",
   );
@@ -407,20 +403,19 @@
   </div>
 
   <div class="commit-box">
-    <!-- Toolbar row: Amend + icon buttons + overflow -->
+    <!-- Toolbar row: Undo last commit + icon buttons + overflow -->
     <div class="commit-toolbar">
-      <span class="amend-toggle">
-        <Checkbox
-          id="amend-toggle"
-          checked={isAmend}
-          testid="amend-toggle"
-          onchange={(e) => {
-            isAmend = (e.target as HTMLInputElement).checked;
-            handleAmendToggle();
-          }}
-        />
-        <label for="amend-toggle">{m.staging_amend_toggle()}</label>
-      </span>
+      <Button
+        variant="danger"
+        size="sm"
+        disabled={!canUndoCommit}
+        loading={undoInProgress}
+        description={m.staging_undo_commit_tooltip()}
+        testid="undo-last-commit-btn"
+        onclick={handleUndoLastCommit}
+      >
+        {m.staging_undo_commit()}
+      </Button>
       <div class="toolbar-actions">
         {#if $hasAiProvider}
           <IconButton
@@ -470,19 +465,24 @@
       </div>
     </div>
 
-    <!-- Commit message: one-line summary + optional body -->
+    <!-- Commit message: one-line summary + optional body.
+         Explicit oninput → updateDraft: `summary`/`description` are
+         `$derived` reads from the draft store, so `bind:value` cannot
+         write back. -->
     <input
       class="commit-summary"
       type="text"
       placeholder={m.staging_summary_placeholder()}
-      bind:value={summary}
+      value={summary}
+      oninput={(e) => updateDraft({ summary: (e.currentTarget as HTMLInputElement).value })}
       onkeydown={(e) => { if (e.key === 'Enter' && e.metaKey) handleCommit(); }}
       data-testid="commit-message"
     />
     <textarea
       class="commit-input"
       placeholder={m.staging_description_placeholder()}
-      bind:value={description}
+      value={description}
+      oninput={(e) => updateDraft({ description: (e.currentTarget as HTMLTextAreaElement).value })}
       onkeydown={(e) => { if (e.key === 'Enter' && e.metaKey) handleCommit(); }}
       data-testid="commit-description"
     ></textarea>
@@ -501,9 +501,7 @@
       onclick={handleCommit}
       testid="commit-btn"
     >
-      {#if isAmend}
-        {m.staging_amend_button()}
-      {:else if headBranch}
+      {#if headBranch}
         {staged.length === 1
           ? m.staging_commit_to_button_one({ count: String(staged.length), branch: headBranch })
           : m.staging_commit_to_button({ count: String(staged.length), branch: headBranch })}
@@ -702,25 +700,6 @@
     height: 1px;
     background: var(--border);
     margin: 4px 8px;
-  }
-
-
-  .amend-toggle {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    font-size: var(--font-size-xs);
-    color: var(--text-secondary);
-    cursor: pointer;
-    transition: color 0.15s ease;
-  }
-
-  .amend-toggle label {
-    cursor: pointer;
-  }
-
-  .amend-toggle:hover {
-    color: var(--text-primary);
   }
 
   .patch-source-dialog {

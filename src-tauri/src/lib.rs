@@ -198,7 +198,7 @@ pub fn run() {
             app_core::commands::cherry_pick,
             app_core::commands::revert_commit,
             app_core::commands::reset_to_commit,
-            app_core::commands::amend_commit,
+            app_core::commands::undo_last_commit,
             app_core::commands::get_head_message,
             app_core::commands::get_signing_config,
             app_core::commands::get_commit_signature,

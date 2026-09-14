@@ -329,8 +329,13 @@ export async function resetToCommit(oid: string, mode: string): Promise<void> {
   return invoke<void>("reset_to_commit", { oid, mode });
 }
 
-export async function amendCommit(message: string): Promise<void> {
-  return invoke<void>("amend_commit", { message });
+/**
+ * Soft-reset HEAD by one commit (or drop the first commit's branch so HEAD
+ * is unborn). Returns the undone commit's message for pre-filling the
+ * commit box. Index and worktree are left intact.
+ */
+export async function undoLastCommit(): Promise<string> {
+  return invoke<string>("undo_last_commit");
 }
 
 export async function getHeadMessage(): Promise<string> {

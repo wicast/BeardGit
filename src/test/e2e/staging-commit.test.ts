@@ -30,6 +30,7 @@ import {
   stageAll,
   unstageAll,
   commit,
+  undoLastCommit,
   clearChangesState,
 } from "$lib/stores/changes";
 
@@ -307,6 +308,19 @@ describe("staging and commit workflow", () => {
 
     // Message must still be there so user doesn't lose their work
     expect(get(commitMessage)).toBe("feat: add feature");
+  });
+
+  // ── undoLastCommit ──────────────────────────────────────────────────
+
+  it("undoLastCommit invokes undo_last_commit and returns the message", async () => {
+    mockInvokeResponse("undo_last_commit", "fix: previous message");
+
+    const message = await undoLastCommit();
+
+    expect(message).toBe("fix: previous message");
+    expect(
+      invokeMock.mock.calls.some((c) => c[0] === "undo_last_commit"),
+    ).toBe(true);
   });
 
   // ── clearChangesState ────────────────────────────────────────────────

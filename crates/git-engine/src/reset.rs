@@ -78,6 +78,50 @@ impl Repository {
         let commit = head.peel_to_commit()?;
         Ok(commit.message().unwrap_or("").to_string())
     }
+
+    /// Soft-reset HEAD by one commit, keeping the index and worktree intact.
+    ///
+    /// Returns the undone commit's message so the UI can pre-fill the commit
+    /// box. This is the "undo last commit" path: the previous commit's files
+    /// stay staged, the user edits the message, then a normal `create_commit`
+    /// produces a replacement — no `--amend` involved.
+    ///
+    /// - With a parent: `git reset --soft HEAD^`.
+    /// - First commit: deletes the branch HEAD points at so HEAD becomes
+    ///   unborn; the index (staged changes) is left alone.
+    ///
+    /// # Errors
+    /// Returns [`GitError::InvalidArgument`] when HEAD is unborn, or when the
+    /// first commit is detached (there is no branch ref to drop).
+    #[instrument(skip(self), fields(repo = %self.path().display()))]
+    pub fn undo_last_commit(&self) -> Result<String, GitError> {
+        let head = self.inner().head()?;
+        let commit = head.peel_to_commit()?;
+        let message = commit.message().unwrap_or("").to_string();
+
+        if let Ok(parent) = commit.parent(0) {
+            self.reset_to_commit(&parent.id().to_string(), "soft")?;
+            return Ok(message);
+        }
+
+        // First commit: drop the branch ref so HEAD is unborn again. The
+        // index still holds that commit's tree as staged changes.
+        //
+        // `Branch::delete` refuses when the branch is current HEAD, and
+        // `git branch -d` does too — `git update-ref -d` is the supported
+        // way to make HEAD unborn while leaving the index alone.
+        let shorthand = head.shorthand().ok_or_else(|| {
+            GitError::InvalidArgument(
+                "HEAD is detached at the first commit; cannot undo".to_string(),
+            )
+        })?;
+        let refname = format!("refs/heads/{shorthand}");
+        let result = self.git_cmd(&["update-ref", "-d", &refname])?;
+        if !result.success {
+            return Err(GitError::CliError(result.stderr));
+        }
+        Ok(message)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -192,5 +236,58 @@ mod tests {
             result,
             Err(crate::error::GitError::InvalidArgument(_))
         ));
+    }
+
+    #[test]
+    fn test_undo_last_commit_soft_resets_to_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = init_repo_with_commits(tmp.path());
+        let message = repo.undo_last_commit().unwrap();
+        assert_eq!(message.trim(), "second commit");
+        assert_eq!(repo.get_head_message().unwrap().trim(), "first commit");
+        // Soft reset keeps the worktree at the undone commit's content.
+        let content = fs::read_to_string(tmp.path().join("file.txt")).unwrap();
+        assert_eq!(content, "second");
+        // And the undone changes stay staged (index vs new HEAD).
+        let staged = repo.diff_index().unwrap();
+        assert!(
+            !staged.is_empty(),
+            "undo should leave the undone commit's files staged"
+        );
+    }
+
+    #[test]
+    fn test_undo_first_commit_leaves_head_unborn() {
+        let tmp = tempfile::tempdir().unwrap();
+        {
+            let git_repo = git2::Repository::init(tmp.path()).unwrap();
+            let mut config = git_repo.config().unwrap();
+            config.set_str("user.name", "Test").unwrap();
+            config.set_str("user.email", "test@test.com").unwrap();
+            drop(config);
+            fs::write(tmp.path().join("only.txt"), "content").unwrap();
+            let mut index = git_repo.index().unwrap();
+            index.add_path(std::path::Path::new("only.txt")).unwrap();
+            index.write().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = git_repo.find_tree(tree_id).unwrap();
+            let sig = git_repo.signature().unwrap();
+            git_repo
+                .commit(Some("HEAD"), &sig, &sig, "first", &tree, &[])
+                .unwrap();
+        }
+        let repo = Repository::open(tmp.path()).unwrap();
+        let message = repo.undo_last_commit().unwrap();
+        assert_eq!(message.trim(), "first");
+        assert!(
+            repo.get_head_message().is_err(),
+            "HEAD should be unborn after undoing the first commit"
+        );
+        // Staged content from the undone commit must remain.
+        let statuses = repo.file_statuses().unwrap();
+        assert!(
+            statuses.iter().any(|s| s.path == "only.txt" && s.is_staged),
+            "first-commit content should still be staged"
+        );
     }
 }

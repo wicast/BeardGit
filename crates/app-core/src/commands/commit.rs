@@ -1,4 +1,4 @@
-//! Commit creation and amendment commands.
+//! Commit creation and undo-last-commit commands.
 
 use mutation_events::{MutationGuard, MutationKind};
 use tauri::{AppHandle, State};
@@ -54,45 +54,34 @@ pub async fn create_commit(
     Ok(oid)
 }
 
-/// Amend the most recent commit with a new message.
+/// Undo the tip commit by soft-resetting HEAD, returning its message.
 ///
-/// Any currently staged changes are included in the amended commit,
-/// mirroring `git commit --amend -m <message>`.
-///
-/// # Arguments
-/// - `message` – The replacement commit message.
+/// The previous commit's files stay staged so the user can edit the message
+/// (or unstage files) and create a normal replacement commit. This replaces
+/// the old "simulate `--amend`" flow.
 ///
 /// # Returns
-/// `Ok(())` on success. A signing failure (signing enabled but the amend
-/// could not be signed) rejects with [`IpcError`] `code = "signing_failed"`;
-/// other failures use the generic code.
+/// The undone commit's message, used to pre-fill the commit box.
 #[tauri::command]
-#[instrument(skip_all, name = "cmd::commit::amend")]
-pub async fn amend_commit(
-    message: String,
+#[instrument(skip_all, name = "cmd::commit::undo_last")]
+pub async fn undo_last_commit(
     state: State<'_, AppState>,
     app: AppHandle,
-) -> Result<(), IpcError> {
+) -> Result<String, IpcError> {
     let repo_path = get_active_project_path(&state)?;
-    let guard = MutationGuard::enter(&repo_path).ok();
-    let amend_path = repo_path.clone();
-    tokio::task::spawn_blocking(move || {
-        let repo = git_engine::Repository::open(amend_path)?;
-        repo.amend_commit(&message).map_err(IpcError::from)
+    with_mutation_guard_async(&state, &app, MutationKind::Reset, || async move {
+        run_blocking(move || {
+            let repo = git_engine::Repository::open(repo_path).map_err(IpcError::from)?;
+            repo.undo_last_commit().map_err(IpcError::from)
+        })
+        .await
     })
     .await
-    .map_err(|e| IpcError::new("internal", e.to_string()))??;
-    if let Some(g) = guard
-        && let Err(err) = g.exit(MutationKind::Amend, &app)
-    {
-        tracing::warn!(?err, "mutation guard emit failed");
-    }
-    Ok(())
 }
 
 /// Return the commit message of the current HEAD commit.
 ///
-/// Useful for pre-filling an amend dialog with the existing message.
+/// Useful when a caller needs the tip message without mutating the repo.
 ///
 /// # Returns
 /// The raw commit message string, or an error string if HEAD cannot be

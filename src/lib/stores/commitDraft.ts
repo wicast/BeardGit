@@ -20,14 +20,6 @@ export interface CommitDraft {
   summary: string;
   /** Optional body, separated from the subject by a blank line. */
   description: string;
-  /** Whether the next commit amends HEAD instead of creating one. */
-  isAmend: boolean;
-  /**
-   * What the user had typed before flipping Amend on. Restored when they
-   * flip it back off, so toggling amend is never destructive.
-   */
-  savedSummary: string;
-  savedDescription: string;
   /** Epoch ms of the last edit — used to evict the oldest drafts. */
   updatedAt: number;
 }
@@ -48,9 +40,6 @@ const MAX_DRAFTS = 100;
 export const EMPTY_DRAFT: CommitDraft = {
   summary: "",
   description: "",
-  isAmend: false,
-  savedSummary: "",
-  savedDescription: "",
   updatedAt: 0,
 };
 
@@ -61,8 +50,8 @@ export const commitDrafts = writable<CommitDraftMap>({});
 
 /**
  * Trim the map to `MAX_DRAFTS` and drop entries with no content worth
- * restoring. An untouched draft (empty everything, amend off) is pure
- * noise — keeping it would make an empty commit box look like a restore.
+ * restoring. An untouched draft (empty everything) is pure noise —
+ * keeping it would make an empty commit box look like a restore.
  */
 function prune(drafts: CommitDraftMap): CommitDraftMap {
   const entries = Object.entries(drafts).filter(([, d]) => isMeaningful(d));
@@ -73,12 +62,7 @@ function prune(drafts: CommitDraftMap): CommitDraftMap {
 
 /** Whether a draft holds anything the user would miss. */
 function isMeaningful(d: CommitDraft): boolean {
-  return (
-    d.summary.trim().length > 0 ||
-    d.description.trim().length > 0 ||
-    d.savedSummary.trim().length > 0 ||
-    d.savedDescription.trim().length > 0
-  );
+  return d.summary.trim().length > 0 || d.description.trim().length > 0;
 }
 
 /** Write the map to localStorage. Never throws — persistence is best-effort. */
@@ -117,9 +101,6 @@ export function loadCommitDrafts(): void {
       drafts[path] = {
         summary: typeof d.summary === "string" ? d.summary : "",
         description: typeof d.description === "string" ? d.description : "",
-        isAmend: d.isAmend === true,
-        savedSummary: typeof d.savedSummary === "string" ? d.savedSummary : "",
-        savedDescription: typeof d.savedDescription === "string" ? d.savedDescription : "",
         updatedAt: typeof d.updatedAt === "number" ? d.updatedAt : 0,
       };
     }
@@ -167,13 +148,7 @@ export function setDraft(projectPath: string, patch: Partial<CommitDraft>): void
     const next: CommitDraft = { ...prev, ...patch, updatedAt: Date.now() };
     // Nothing but the timestamp changed → skip the store notification so
     // inputs don't re-render on every no-op write.
-    if (
-      next.summary === prev.summary &&
-      next.description === prev.description &&
-      next.isAmend === prev.isAmend &&
-      next.savedSummary === prev.savedSummary &&
-      next.savedDescription === prev.savedDescription
-    ) {
+    if (next.summary === prev.summary && next.description === prev.description) {
       return drafts;
     }
     persist();

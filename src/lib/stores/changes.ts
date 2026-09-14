@@ -20,7 +20,7 @@ import {
   stageAll as apiStageAll,
   unstageAll as apiUnstageAll,
   createCommit as apiCreateCommit,
-  amendCommit as apiAmendCommit,
+  undoLastCommit as apiUndoLastCommit,
   getDiffStatsWorkdir as apiDiffStatsWorkdir,
   getDiffStatsIndex as apiDiffStatsIndex,
   getDiffFile as apiDiffFile,
@@ -53,13 +53,8 @@ export const openStagingFile = activeField<{ path: string; isStaged: boolean } |
 export const openStagingDiff = activeField<FileDiff | null>((rs) => rs.changes.openStagingDiff);
 /** Current commit message draft. Cleared after successful commit. */
 export const commitMessage = activeField<string>((rs) => rs.changes.commitMessage);
-/** Commit body draft + amend toggle — see `ChangesSlice`. */
+/** Commit body draft — lives here so it survives leaving the Changes view. */
 export const commitDescription = activeField<string>((rs) => rs.changes.commitDescription);
-export const commitAmend = activeField<boolean>((rs) => rs.changes.commitAmend);
-export const commitPreAmendSummary = activeField<string>((rs) => rs.changes.commitPreAmendSummary);
-export const commitPreAmendDescription = activeField<string>(
-  (rs) => rs.changes.commitPreAmendDescription,
-);
 
 /** Clear the active repo's changes state (e.g., on project switch). */
 export function clearChangesState(): void {
@@ -223,16 +218,18 @@ export async function commit(message: string) {
 }
 
 /**
- * Amend the current HEAD commit.
+ * Undo the tip commit (soft reset; first commit becomes unborn).
  *
- * Same refresh story as {@link commit}: the mutation listener reloads
- * statuses + graph automatically.
+ * Returns the undone commit's message so the caller can pre-fill the
+ * commit box. Refresh of statuses / diffs / graph is driven by the
+ * `project-mutated` event — see `mutations.ts`.
  */
-export async function amendCommit(message: string): Promise<void> {
-  await runMutation({
-    kind: "amend",
-    invoke: () => apiAmendCommit(message),
-    successToast: () => `Amended — ${truncate(message, 60)}`,
-    failureToastPrefix: "Amend failed",
+export async function undoLastCommit(): Promise<string> {
+  const message = await runMutation({
+    kind: "reset_soft",
+    invoke: () => apiUndoLastCommit(),
+    successToast: () => "Last commit undone — edit and recommit",
+    failureToastPrefix: "Undo last commit failed",
   });
+  return message ?? "";
 }
