@@ -1,18 +1,31 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import type { RecentRepo } from "$lib/types";
-  import { getRecentRepos } from "$lib/api/tauri";
+  import {
+    getRecentRepos,
+    removeRecentRepo,
+    clearRecentRepos,
+  } from "$lib/api/tauri";
   import { openProjectTab, openFolderAsProject, addMenuOpen } from "$lib/stores/projects";
   import { openCloneDialog } from "$lib/stores/cloneDialog";
   import { get } from "svelte/store";
+  import ContextMenu from "$lib/components/common/ContextMenu.svelte";
+  import type { MenuItem } from "$lib/components/common/ContextMenu.svelte";
   import * as m from "$lib/paraglide/messages";
 
   let recentRepos = $state<RecentRepo[]>([]);
   let menuRef = $state<HTMLDivElement | null>(null);
 
+  let contextMenuVisible = $state(false);
+  let contextMenuX = $state(0);
+  let contextMenuY = $state(0);
+  let contextMenuItems = $state<MenuItem[]>([]);
+
   $effect(() => {
     if ($addMenuOpen) {
       loadRecent();
+    } else {
+      contextMenuVisible = false;
     }
   });
 
@@ -35,18 +48,75 @@
     await openProjectTab(path);
   }
 
+  async function handleRemoveRecent(path: string) {
+    try {
+      await removeRecentRepo(path);
+      await loadRecent();
+    } catch (err) {
+      console.error("Failed to remove recent repo:", err);
+    }
+  }
+
+  async function handleClearAll() {
+    try {
+      await clearRecentRepos();
+      recentRepos = [];
+    } catch (err) {
+      console.error("Failed to clear recent repos:", err);
+    }
+  }
+
+  function handleRecentContextMenu(e: MouseEvent, repo: RecentRepo) {
+    e.preventDefault();
+    e.stopPropagation();
+    contextMenuItems = [
+      {
+        label: m.tab_add_open_recent(),
+        action: () => void handleRecentClick(repo.path),
+      },
+      { separator: true },
+      {
+        label: m.tab_add_remove_recent(),
+        tone: "danger",
+        action: () => void handleRemoveRecent(repo.path),
+      },
+      {
+        label: m.tab_add_clear_recent(),
+        tone: "danger",
+        action: () => void handleClearAll(),
+      },
+    ];
+    contextMenuX = e.clientX;
+    contextMenuY = e.clientY;
+    contextMenuVisible = true;
+  }
+
+  function closeAddMenu() {
+    contextMenuVisible = false;
+    addMenuOpen.set(false);
+  }
+
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === "Escape") {
-      addMenuOpen.set(false);
+      closeAddMenu();
     }
   }
 
   function handleClickOutside(e: MouseEvent) {
     if (!get(addMenuOpen)) return;
-    // Ignore clicks on the + button itself (it toggles via its own handler)
+    // Ignore clicks on the + button itself (it toggles via its own handler),
+    // inside the dropdown, and on the context-menu layer so its item actions
+    // (and backdrop dismiss) can run without tearing the add menu down first.
     const target = e.target as HTMLElement;
-    if (target.closest(".add-button-wrapper")) return;
-    addMenuOpen.set(false);
+    if (
+      target.closest(".add-button-wrapper") ||
+      target.closest(".add-menu") ||
+      target.closest(".context-menu") ||
+      target.closest(".backdrop")
+    ) {
+      return;
+    }
+    closeAddMenu();
   }
 
   onMount(() => {
@@ -73,13 +143,29 @@
 
     <div class="menu-divider"></div>
 
-    <div class="menu-section-label">{m.tab_add_recent()}</div>
+    <div class="menu-section-label-row">
+      <div class="menu-section-label">{m.tab_add_recent()}</div>
+      {#if recentRepos.length > 0}
+        <button
+          class="section-clear"
+          onclick={() => void handleClearAll()}
+          title={m.tab_add_clear_recent()}
+        >
+          {m.tab_add_clear_recent()}
+        </button>
+      {/if}
+    </div>
 
     {#if recentRepos.length === 0}
       <div class="menu-empty">{m.tab_add_no_recent()}</div>
     {:else}
-      {#each recentRepos as repo}
-        <button class="menu-item" onclick={() => handleRecentClick(repo.path)} title={repo.path}>
+      {#each recentRepos as repo (repo.path)}
+        <button
+          class="menu-item"
+          onclick={() => handleRecentClick(repo.path)}
+          oncontextmenu={(e) => handleRecentContextMenu(e, repo)}
+          title={repo.path}
+        >
           <span class="menu-icon">{"\uF07C"}</span>
           <span>{repo.name}</span>
         </button>
@@ -87,6 +173,14 @@
     {/if}
   </div>
 {/if}
+
+<ContextMenu
+  items={contextMenuItems}
+  x={contextMenuX}
+  y={contextMenuY}
+  visible={contextMenuVisible}
+  onClose={() => (contextMenuVisible = false)}
+/>
 
 <style>
   .add-menu {
@@ -140,13 +234,33 @@
     margin: 4px 0;
   }
 
-  .menu-section-label {
+  .menu-section-label-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
     padding: 4px 12px 2px;
+  }
+
+  .menu-section-label {
     font-size: var(--font-size-xs);
     color: var(--text-secondary);
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.5px;
+  }
+
+  .section-clear {
+    background: none;
+    border: none;
+    padding: 0;
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+    cursor: pointer;
+  }
+
+  .section-clear:hover {
+    color: var(--accent-red);
   }
 
   .menu-empty {

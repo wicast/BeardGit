@@ -571,6 +571,35 @@ pub fn get_recent_repos(state: State<'_, AppState>) -> Result<Vec<RecentRepo>, I
     Ok(filter_recent_repos(&config.recent_repos, &open_path_refs))
 }
 
+/// Remove a single path from the recent-repos list.
+///
+/// # Parameters
+/// - `path` – Absolute filesystem path to drop from recents.
+#[tauri::command]
+#[instrument(skip(state), name = "cmd::project::remove_recent")]
+pub fn remove_recent_repo(path: String, state: State<'_, AppState>) -> Result<(), IpcError> {
+    let mut config = state.config.lock().map_err(|e| e.to_string())?;
+    config.recent_repos.retain(|r| r != &path);
+    config
+        .save(&state.config_path)
+        .map_err(|e| e.to_string())?;
+    tracing::info!(path = %path, "recent repo removed");
+    Ok(())
+}
+
+/// Clear the entire recent-repos list.
+#[tauri::command]
+#[instrument(skip(state), name = "cmd::project::clear_recent")]
+pub fn clear_recent_repos(state: State<'_, AppState>) -> Result<(), IpcError> {
+    let mut config = state.config.lock().map_err(|e| e.to_string())?;
+    config.recent_repos.clear();
+    config
+        .save(&state.config_path)
+        .map_err(|e| e.to_string())?;
+    tracing::info!("recent repos cleared");
+    Ok(())
+}
+
 /// Pure helper: given a recent-repos list and a set of currently open paths,
 /// return the recent entries not currently open, preserving order.
 ///

@@ -223,6 +223,8 @@ pub fn run() {
             app_core::commands::get_active_project_index,
             app_core::commands::restore_projects,
             app_core::commands::get_recent_repos,
+            app_core::commands::remove_recent_repo,
+            app_core::commands::clear_recent_repos,
             app_core::commands::get_remotes,
             app_core::commands::fetch_remote,
             app_core::commands::pull_remote,

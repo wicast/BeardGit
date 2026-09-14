@@ -646,6 +646,16 @@ export async function getRecentRepos(): Promise<RecentRepo[]> {
   return invoke<RecentRepo[]>("get_recent_repos");
 }
 
+/** Drop a single path from the recent-repos list. */
+export async function removeRecentRepo(path: string): Promise<void> {
+  return invoke<void>("remove_recent_repo", { path });
+}
+
+/** Clear every entry from the recent-repos list. */
+export async function clearRecentRepos(): Promise<void> {
+  return invoke<void>("clear_recent_repos");
+}
+
 export async function restoreProjects(): Promise<ProjectInfo[]> {
   return invoke<ProjectInfo[]>("restore_projects");
 }
