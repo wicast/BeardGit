@@ -125,7 +125,16 @@ impl Repository {
         } else {
             match self.repo.head() {
                 Ok(head_ref) => {
-                    let branch = head_ref.shorthand().map(|s| s.to_owned());
+                    // Detached HEAD is a direct ref named "HEAD"; its
+                    // shorthand is the literal "HEAD", which is not a
+                    // branch name. Surface `None` so callers (graph
+                    // branch scope, title bar) fall back to "all refs"
+                    // instead of looking up refs/heads/HEAD.
+                    let branch = if head_ref.is_branch() {
+                        head_ref.shorthand().map(|s| s.to_owned())
+                    } else {
+                        None
+                    };
                     let oid = head_ref.target().map(|id| id.to_string());
                     (branch, oid)
                 }
@@ -648,6 +657,28 @@ mod tests {
 
         assert!(status.is_empty, "is_empty should be true");
         assert!(status.head_branch.is_none(), "head_branch should be None");
+    }
+
+    #[test]
+    fn test_status_detached_head_has_no_branch() {
+        // A detached HEAD's shorthand is the literal "HEAD". Reporting that
+        // as `head_branch` makes the graph scope itself to `refs/heads/HEAD`,
+        // which does not exist — viewport rebuilds fail and the canvas stays
+        // blank. Detached must surface `None` so callers fall back to all refs.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = create_repo_with_commit(&dir);
+
+        let repo = Repository::open(&path).unwrap();
+        let oid = repo.status().unwrap().head_oid.expect("head oid");
+        repo.checkout_detached(&oid).unwrap();
+
+        let status = repo.status().unwrap();
+        assert!(
+            status.head_branch.is_none(),
+            "detached HEAD must not report a branch name, got {:?}",
+            status.head_branch
+        );
+        assert_eq!(status.head_oid.as_deref(), Some(oid.as_str()));
     }
 
     #[test]

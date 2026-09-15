@@ -137,7 +137,10 @@ impl Repository {
     pub fn get_current_branch(&self) -> Result<Option<String>, GitError> {
         let repo = self.inner();
         match repo.head() {
-            Ok(head) => Ok(head.shorthand().map(String::from)),
+            // `is_branch()` is false for a detached HEAD, whose shorthand
+            // is the literal "HEAD" rather than a branch name.
+            Ok(head) if head.is_branch() => Ok(head.shorthand().map(String::from)),
+            Ok(_) => Ok(None),
             Err(_) => Ok(None),
         }
     }
@@ -300,9 +303,10 @@ mod tests {
         let oid = &commits[0].oid;
 
         repo.checkout_detached(oid).unwrap();
+        // Detached HEAD is not a branch — shorthand would be the literal
+        // "HEAD", which callers must not treat as a resolvable branch name.
         let branch = repo.get_current_branch().unwrap();
-        // Detached HEAD — branch name is the oid, not a branch ref
-        assert!(branch.is_some());
+        assert!(branch.is_none(), "detached HEAD has no branch name");
     }
 
     #[test]

@@ -20,6 +20,7 @@ import {
   detectProject,
 } from "../api/tauri";
 import { getErrorCode, getErrorMessage } from "../api/errors";
+import { addToast } from "./toast";
 import { requestOpenInitRepoDialog } from "./initRepoDialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { repoInfo, isLoading, registerWatcher } from "./repo";
@@ -421,8 +422,21 @@ async function activateProjectTab(tabIndex: number) {
     // preserves the scroll position — the manual branch dropdown still
     // resets to top via `setGraphViewOptions`, which is the expected
     // behaviour when the user explicitly picks a branch.
-    graphViewOptions.update((o) => ({ ...o, branch: info.head_branch ?? undefined }));
-    void reloadGraph();
+    //
+    // Guard against a literal "HEAD": older backends (and any residual
+    // snapshot) surface detached HEAD that way, and `refs/heads/HEAD` is
+    // not a resolvable tip — scoping to it makes `get_graph_viewport`
+    // rebuild fail and leaves the canvas blank.
+    const headBranch =
+      info.head_branch && info.head_branch !== "HEAD" ? info.head_branch : undefined;
+    graphViewOptions.update((o) => ({ ...o, branch: headBranch }));
+    void reloadGraph().catch((err) => {
+      console.error("Failed to reload graph after project switch", err);
+      addToast({
+        type: "error",
+        message: getErrorMessage(err),
+      });
+    });
 
     // Reset CI state
     ciRuns.set([]);
