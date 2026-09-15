@@ -254,15 +254,17 @@
     {#if commit.parents.length > 0}
       <div class="detail-section">
         <div class="detail-label">{m.commit_detail_parents()}</div>
-        {#each commit.parents as parent}
-          {#if onNavigateToGraph}
-            <button class="parent-oid clickable" onclick={() => onNavigateToGraph!(parent)}>
-              {parent.substring(0, 12)}
-            </button>
-          {:else}
-            <span class="parent-oid">{parent.substring(0, 12)}</span>
-          {/if}
-        {/each}
+        <div class="parent-list">
+          {#each commit.parents as parent}
+            {#if onNavigateToGraph}
+              <button class="parent-oid clickable" onclick={() => onNavigateToGraph!(parent)}>
+                {parent.substring(0, 12)}
+              </button>
+            {:else}
+              <span class="parent-oid">{parent.substring(0, 12)}</span>
+            {/if}
+          {/each}
+        </div>
       </div>
     {/if}
 
@@ -405,12 +407,20 @@
     word-break: break-all;
   }
 
+  .parent-list {
+    display: flex;
+    flex-direction: column;
+    /* ~one character height so merge parents don't read as a single run. */
+    gap: 8px;
+    margin-top: 6px;
+  }
+
   .parent-oid {
     font-family: "SF Mono", "Fira Code", "Consolas", monospace;
     font-size: var(--font-size-xs);
     color: var(--accent-primary);
-    margin-top: 4px;
     cursor: default;
+    text-align: left;
   }
 
   .parent-oid.clickable {
