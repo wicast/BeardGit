@@ -99,6 +99,7 @@
   "staging_hint_nothing_staged": "Prepara al menos un archivo para hacer commit",
   "staging_undo_commit": "Deshacer último commit",
   "staging_undo_commit_tooltip": "Soft-reset de HEAD y vuelve a preparar el último commit para editar el mensaje y rehacerlo",
+  "staging_undo_commit_confirm": "¿Hacer soft-reset de HEAD para deshacer el último commit y devolver sus archivos a staged? El commit se elimina de esta rama; si ya se había subido, hará falta un force-push para actualizar el remoto.",
   "staging_will_be_signed": "Se firmará ({format})",
   "search_placeholder": "Buscar...",
   "search_hint": "usa ; para añadir múltiples filtros",

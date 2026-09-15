@@ -99,6 +99,7 @@
   "staging_hint_nothing_staged": "Stage at least one file to commit",
   "staging_undo_commit": "Undo last commit",
   "staging_undo_commit_tooltip": "Soft-reset HEAD and re-stage the last commit so you can edit the message and recommit",
+  "staging_undo_commit_confirm": "Soft-reset HEAD so the last commit is undone and its files return to staged? The commit is removed from this branch — if it was already pushed, you will need to force-push to update the remote.",
   "staging_will_be_signed": "Will be signed ({format})",
   "search_placeholder": "Search...",
   "search_hint": "use ; to add multiple filters",

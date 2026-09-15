@@ -25,6 +25,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { save } from "@tauri-apps/plugin-dialog";
   import { Button, IconButton } from "$lib/components/ui";
+  import ConfirmDialog from "../common/ConfirmDialog.svelte";
 
   let {
     onFileClick,
@@ -142,6 +143,8 @@
   let undoInProgress = $state(false);
   /** Disabled when there is no HEAD commit to undo. */
   let canUndoCommit = $derived(!!$repoInfo?.head_oid && !undoInProgress);
+  /** Confirm dialog gate — undo rewrites HEAD, so it is never one-click. */
+  let confirmUndoCommit = $state(false);
 
   /**
    * Undo the tip commit: soft-reset (or drop the first commit's branch),
@@ -412,7 +415,7 @@
         loading={undoInProgress}
         description={m.staging_undo_commit_tooltip()}
         testid="undo-last-commit-btn"
-        onclick={handleUndoLastCommit}
+        onclick={() => { confirmUndoCommit = true; }}
       >
         {m.staging_undo_commit()}
       </Button>
@@ -539,6 +542,21 @@
 
   {#if showCleanDialog}
     <CleanDialog onClose={() => showCleanDialog = false} />
+  {/if}
+
+  {#if confirmUndoCommit}
+    <ConfirmDialog
+      title={m.staging_undo_commit()}
+      detail={$repoInfo?.head_branch ?? undefined}
+      message={m.staging_undo_commit_confirm()}
+      confirmLabel={m.staging_undo_commit()}
+      destructive={true}
+      onConfirm={async () => {
+        confirmUndoCommit = false;
+        await handleUndoLastCommit();
+      }}
+      onCancel={() => { confirmUndoCommit = false; }}
+    />
   {/if}
 </div>
 
