@@ -811,6 +811,8 @@
   "update_up_to_date": "BeardGit está al día",
   "update_check_button": "Buscar actualizaciones",
   "update_current_version": "Versión actual",
+  "update_git_rev": "Commit de Git incluido en esta compilación",
+  "update_git_rev_dirty": "Compilado desde un worktree con cambios sin commitear",
   "update_settings_title": "Actualizaciones",
   "update_settings_auto_check_label": "Buscar actualizaciones al iniciar",
   "update_settings_auto_check_hint": "Si lo desactivas, usa el botón de arriba para buscar manualmente.",

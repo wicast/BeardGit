@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 import { sveltekit } from "@sveltejs/kit/vite";
 import { paraglideVitePlugin as paraglide } from "@inlang/paraglide-js";
 import { readFileSync } from "node:fs";
+import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const host = process.env.TAURI_DEV_HOST;
@@ -12,6 +13,31 @@ const host = process.env.TAURI_DEV_HOST;
 const pkg = JSON.parse(
   readFileSync(fileURLToPath(new URL("./package.json", import.meta.url)), "utf-8"),
 );
+
+const projectRoot = fileURLToPath(new URL(".", import.meta.url));
+
+/**
+ * Short git revision baked into the bundle (Settings → Updates).
+ * Appends `-dirty` when the worktree has uncommitted changes at
+ * build/package time. Empty string when git is unavailable.
+ */
+function getGitRev() {
+  const git = (args) =>
+    execSync(args, { cwd: projectRoot, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  try {
+    const hash = git("git rev-parse --short HEAD");
+    if (!hash) return "";
+    let dirty = false;
+    try {
+      dirty = git("git status --porcelain").length > 0;
+    } catch {
+      // status failure shouldn't drop the hash
+    }
+    return dirty ? `${hash}-dirty` : hash;
+  } catch {
+    return "";
+  }
+}
 
 // `defineConfig` receives a plain object (not an async factory) so Vite can
 // hash the config statically and reuse `node_modules/.vite/deps` across
@@ -27,6 +53,7 @@ export default defineConfig({
   ],
   define: {
     "import.meta.env.VITE_APP_VERSION": JSON.stringify(pkg.version),
+    "import.meta.env.VITE_APP_GIT_REV": JSON.stringify(getGitRev()),
   },
   clearScreen: false,
   server: {

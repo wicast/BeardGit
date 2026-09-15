@@ -106,6 +106,15 @@
   const appVersion: string =
     (import.meta.env.VITE_APP_VERSION as string | undefined) ?? "0.0.0";
 
+  /** Short git SHA baked at build time; `-dirty` suffix when packaging with a dirty worktree. */
+  const appGitRev: string =
+    (import.meta.env.VITE_APP_GIT_REV as string | undefined) ?? "";
+
+  let isDirtyBuild = $derived(appGitRev.endsWith("-dirty"));
+  let gitRevLabel = $derived(
+    isDirtyBuild ? appGitRev.slice(0, -"-dirty".length) : appGitRev,
+  );
+
   let autoCheck = $state(true);
   let checking = $state(false);
   let installing = $state(false);
@@ -276,9 +285,21 @@
 >
   <SettingSection title={m.update_settings_title()}>
     <FormRow label={m.update_current_version()}>
-      <span class="version-badge" data-testid="update-current-version">
-        {appVersion}
-      </span>
+      <div class="version-stack">
+        <span class="version-badge" data-testid="update-current-version">
+          {appVersion}
+        </span>
+        {#if appGitRev}
+          <span
+            class="git-rev"
+            class:dirty={isDirtyBuild}
+            data-testid="update-current-git-rev"
+            title={isDirtyBuild ? m.update_git_rev_dirty() : m.update_git_rev()}
+          >
+            {gitRevLabel}{#if isDirtyBuild}<span class="git-rev-dirty">-dirty</span>{/if}
+          </span>
+        {/if}
+      </div>
     </FormRow>
 
     <div data-setting-anchor="update-check">
@@ -430,6 +451,29 @@
     font-family: var(--font-mono);
     font-size: var(--font-size-sm);
     color: var(--text-primary);
+  }
+
+  .version-stack {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+  }
+
+  .git-rev {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+    letter-spacing: 0.02em;
+  }
+
+  .git-rev.dirty {
+    color: var(--accent-orange);
+  }
+
+  .git-rev-dirty {
+    color: var(--accent-orange);
+    font-weight: 600;
   }
 
   .update-diagnostics {

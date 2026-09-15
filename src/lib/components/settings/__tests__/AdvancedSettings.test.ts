@@ -109,6 +109,35 @@ describe("AdvancedSettings — unsigned-build notice", () => {
   });
 });
 
+describe("AdvancedSettings — git revision under current version", () => {
+  it("hides the revision line when the build did not bake one in", async () => {
+    vi.stubEnv("VITE_APP_GIT_REV", "");
+    const { queryByTestId } = await renderSettled();
+    expect(queryByTestId("update-current-git-rev")).toBeNull();
+    vi.unstubAllEnvs();
+  });
+
+  it("shows the short hash, marking a dirty package build in orange", async () => {
+    vi.stubEnv("VITE_APP_GIT_REV", "abc1234-dirty");
+    const { getByTestId } = await renderSettled();
+    const rev = getByTestId("update-current-git-rev");
+    expect(rev.textContent).toContain("abc1234");
+    expect(rev.textContent).toContain("-dirty");
+    expect(rev.classList.contains("dirty")).toBe(true);
+    vi.unstubAllEnvs();
+  });
+
+  it("shows a clean hash without the dirty suffix", async () => {
+    vi.stubEnv("VITE_APP_GIT_REV", "abc1234");
+    const { getByTestId } = await renderSettled();
+    const rev = getByTestId("update-current-git-rev");
+    expect(rev.textContent).toContain("abc1234");
+    expect(rev.textContent).not.toContain("-dirty");
+    expect(rev.classList.contains("dirty")).toBe(false);
+    vi.unstubAllEnvs();
+  });
+});
+
 describe("AdvancedSettings — log level selector", () => {
   it("offers exactly the three levels the backend accepts", async () => {
     const { getByTestId } = await renderSettled();

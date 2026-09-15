@@ -811,6 +811,8 @@
   "update_up_to_date": "BeardGit is up to date",
   "update_check_button": "Check for updates",
   "update_current_version": "Current version",
+  "update_git_rev": "Git commit baked into this build",
+  "update_git_rev_dirty": "Built from a worktree with uncommitted changes",
   "update_settings_title": "Updates",
   "update_settings_auto_check_label": "Automatically check for updates on startup",
   "update_settings_auto_check_hint": "When off, check manually with the button above.",
