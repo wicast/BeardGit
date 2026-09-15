@@ -261,12 +261,15 @@
   /**
    * Build the "Push (force-with-lease)" context-menu item.
    * Always a submenu so force-push never happens on a single click.
+   * Marked danger (red) so it is visually distinct from plain Push.
    */
   function forcePushMenuItem(): MenuItem {
     return {
-      label: "Push (force-with-lease)",
+      label: m.branch_force_push(),
+      tone: "danger",
       children: $remotes.map((r) => ({
         label: r.name,
+        tone: "danger",
         action: () => {
           confirmForcePush = { remote: r.name, branch: contextBranch };
         },
@@ -559,10 +562,13 @@
 
 {#if confirmForcePush !== null}
   <ConfirmDialog
-    title="Force-push with lease"
+    title={m.branch_force_push()}
     detail={`${confirmForcePush.remote}/${confirmForcePush.branch}`}
-    message={`Force-push ${confirmForcePush.branch} to ${confirmForcePush.remote} (with --force-with-lease)? This rewrites history on the remote.`}
-    confirmLabel="Force-push"
+    message={m.branch_force_push_confirm({
+      branch: confirmForcePush.branch,
+      remote: confirmForcePush.remote,
+    })}
+    confirmLabel={m.branch_force_push_confirm_label()}
     destructive={true}
     onConfirm={async () => {
       const { remote, branch } = confirmForcePush!;
