@@ -179,6 +179,7 @@
                 files={$selectedCommitFiles}
                 onSelect={handleFileClick}
                 memoryKey={scoped(`tags.files.${$selectedTagName}`)}
+                treeToggle
               />
             {/key}
           </div>

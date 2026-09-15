@@ -6,9 +6,15 @@
  * dimmed-directory + filename split with `onSelect` firing on clicks.
  */
 
-import { describe, expect, it, vi, afterEach } from "vitest";
+import { describe, expect, it, vi, afterEach, beforeEach } from "vitest";
 import { cleanup, fireEvent, render } from "@testing-library/svelte";
 import FileChangeList from "../FileChangeList.svelte";
+import { changesTreeView } from "$lib/stores/changesView";
+
+vi.mock("$lib/api/tauri", () => ({
+  getChangesTreeView: vi.fn().mockResolvedValue(false),
+  setChangesTreeView: vi.fn().mockResolvedValue(undefined),
+}));
 
 const FILES = [
   { path: "src/lib/a.ts", status: "added" },
@@ -16,6 +22,10 @@ const FILES = [
   { path: "src/main.ts", status: "deleted" },
   { path: "README.md", status: "added" },
 ];
+
+beforeEach(() => {
+  changesTreeView.set(false);
+});
 
 afterEach(() => cleanup());
 
@@ -61,6 +71,26 @@ describe("FileChangeList tree mode", () => {
     expect(dirs[2]?.textContent).toContain("deep");
     // File leaves (all four files) use their bare name (depth-indented).
     expect(container.querySelectorAll(".file-item:not(.dir-item)")).toHaveLength(4);
+  });
+
+  it("persists the toggle through the shared global preference", async () => {
+    const api = await import("$lib/api/tauri");
+    const { container } = render(FileChangeList, {
+      props: { files: FILES, treeToggle: true },
+    });
+    await fireEvent.click(
+      container.querySelector('[data-testid="fcl-tree-toggle"]')!,
+    );
+    expect(api.setChangesTreeView).toHaveBeenCalledWith(true);
+    expect(await api.getChangesTreeView).not.toHaveBeenCalled(); // only load hydrates
+  });
+
+  it("starts in tree mode when the global preference is already on", () => {
+    changesTreeView.set(true);
+    const { container } = render(FileChangeList, {
+      props: { files: FILES, treeToggle: true },
+    });
+    expect(container.querySelectorAll(".dir-item")).toHaveLength(3);
   });
 
   it("collapses and expands a directory on its row click", async () => {

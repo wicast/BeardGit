@@ -2,17 +2,19 @@
   FileChangeList — Selectable file list with status icons and path highlighting.
 
   Shared component used by tag detail, graph commit detail, stash detail,
-  and branch commit detail. Displays repo-relative paths with directory
-  portions dimmed and the filename highlighted. Emits `onSelect` when a
-  file is clicked.
+  branch commit detail, and compare. Displays repo-relative paths with
+  directory portions dimmed and the filename highlighted. Emits `onSelect`
+  when a file is clicked.
 
   Tree mode (opt-in via `treeToggle`): groups the flat list into collapsible
   directory rows built with the same tree model as the Changes view
-  (`buildGenericChangesTree` + `flattenTree`). The flat/tree mode and the
-  collapsed-dir set are component-local — read-only commit file lists are
-  not tied to the working-tree `changesTreeView` preference. Either way the
-  rows are flattened into one `{node, depth}` array, so the virtual window
-  is computed over the same array in both modes.
+  (`buildGenericChangesTree` + `flattenTree`). The flat/tree mode is the
+  **global** `changesTreeView` preference (persisted via
+  `get/set_changes_tree_view`) so every changed-files list in the app —
+  working tree, commit detail, tags, compare — shares one mental model.
+  Collapsed-dir state stays component-local. Either way the rows are
+  flattened into one `{node, depth}` array, so the virtual window is
+  computed over the same array in both modes.
 -->
 <script lang="ts">
   import type { CommitFileChange } from "../../types";
@@ -21,6 +23,10 @@
   import * as m from "$lib/paraglide/messages";
   import { get, writable } from "svelte/store";
   import { remembered } from "$lib/stores/viewMemory";
+  import {
+    changesTreeView,
+    setChangesTreeView,
+  } from "$lib/stores/changesView";
   import { horizontalWheel } from "$lib/actions/horizontalWheel";
   import {
     computeVirtualWindow,
@@ -80,7 +86,9 @@
   });
 
   // ── Flat / tree rows ──────────────────────────────────────────────────
-  let treeMode = $state(false);
+  // Global preference shared with the Changes view — toggling here also
+  // flips the working-tree list and vice versa. Persisted backend-side.
+  let treeMode = $derived(treeToggle && $changesTreeView);
   let collapsedDirs = $state<Set<string>>(new Set());
 
   function toggleCollapse(path: string) {
@@ -88,6 +96,10 @@
     if (next.has(path)) next.delete(path);
     else next.add(path);
     collapsedDirs = next;
+  }
+
+  function handleTreeToggle() {
+    void setChangesTreeView(!$changesTreeView);
   }
 
   type Row = ChangesTreeRow<CommitFileChange>;
@@ -195,7 +207,7 @@
       icon={treeMode ? "\uF0C9" : "\uF07B"}
       description={m.changes_tree_toggle()}
       testid="fcl-tree-toggle"
-      onclick={() => { treeMode = !treeMode; }}
+      onclick={handleTreeToggle}
     />
   </div>
 {/if}

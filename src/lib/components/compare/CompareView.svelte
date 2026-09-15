@@ -188,6 +188,7 @@
             files={$compareFiles}
             onSelect={(p) => openCompareFileDiff(p)}
             memoryKey={scoped("compare.files")}
+            treeToggle
           />
         {/if}
       </section>

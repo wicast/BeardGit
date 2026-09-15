@@ -45,6 +45,7 @@
   import { getSidebarCollapsed, setSidebarCollapsed, resolveStartupTheme } from "$lib/api/tauri";
   import { loadSidebarLayout } from "$lib/stores/sidebarLayout";
   import { loadEditorPrefs } from "$lib/stores/editorPrefs";
+  import { loadChangesViewPref } from "$lib/stores/changesView";
   import ReflogView from "$lib/components/reflog/ReflogView.svelte";
   import ContextMenu from "$lib/components/common/ContextMenu.svelte";
   import type { MenuItem } from "$lib/components/common/ContextMenu.svelte";
@@ -278,6 +279,10 @@
     // mounts. Failure is non-fatal — the store stays `null` and
     // consumers render their loading state until a later success.
     await loadEditorPrefs();
+    // Global flat/tree preference for every changed-files list (Changes,
+    // commit detail, tags, compare). Hydrated here so the first commit
+    // detail paints the right mode without waiting for StagingArea.
+    void loadChangesViewPref();
 
     // Start the file-editor's project-mutated listener (flags external
     // changes on open buffers) and remember the teardown for onDestroy.
