@@ -337,6 +337,20 @@ pub struct AppConfig {
     /// Persisted window height in logical pixels.
     #[serde(default)]
     pub window_height: Option<u32>,
+    /// Persisted window X position in logical pixels.
+    #[serde(default)]
+    pub window_x: Option<i32>,
+    /// Persisted window Y position in logical pixels.
+    #[serde(default)]
+    pub window_y: Option<i32>,
+    /// Whether the window was maximized when last closed.
+    #[serde(default)]
+    pub window_maximized: bool,
+    /// Number of OS windows that were open when geometry was last saved.
+    /// Restore is skipped when the current window count differs — e.g. the
+    /// user launched with a different multi-window layout than last time.
+    #[serde(default)]
+    pub window_count: Option<u32>,
 
     /// Paths of currently open projects (persisted across restarts).
     #[serde(default)]
@@ -475,6 +489,10 @@ impl Default for AppConfig {
             external_editor: None,
             window_width: None,
             window_height: None,
+            window_x: None,
+            window_y: None,
+            window_maximized: false,
+            window_count: None,
             open_projects: Vec::new(),
             active_project_index: None,
             ui_scale: default_ui_scale(),
@@ -566,6 +584,31 @@ mod tests {
         let config = AppConfig::default();
         assert_eq!(config.theme, "beardgit-dark");
         assert!(config.providers.is_empty());
+        assert_eq!(config.window_count, None);
+        assert!(!config.window_maximized);
+        assert_eq!(config.window_x, None);
+    }
+
+    #[test]
+    fn test_window_geometry_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let mut config = AppConfig::default();
+        config.window_width = Some(1440);
+        config.window_height = Some(900);
+        config.window_x = Some(120);
+        config.window_y = Some(80);
+        config.window_maximized = true;
+        config.window_count = Some(1);
+        config.save(&path).unwrap();
+
+        let loaded = AppConfig::load(&path).unwrap();
+        assert_eq!(loaded.window_width, Some(1440));
+        assert_eq!(loaded.window_height, Some(900));
+        assert_eq!(loaded.window_x, Some(120));
+        assert_eq!(loaded.window_y, Some(80));
+        assert!(loaded.window_maximized);
+        assert_eq!(loaded.window_count, Some(1));
     }
 
     #[test]

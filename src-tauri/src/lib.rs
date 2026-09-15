@@ -5,6 +5,87 @@
 //! `run` function is also used as the mobile entry point via the
 //! `tauri::mobile_entry_point` attribute.
 
+use tauri::{LogicalPosition, LogicalSize, Manager};
+
+/// Minimum logical size matching `tauri.conf.json` (minWidth/minHeight).
+const MIN_WINDOW_W: u32 = 900;
+const MIN_WINDOW_H: u32 = 600;
+
+/// Read this window's geometry (logical pixels) into the in-memory config.
+/// Does not touch disk — callers decide when to flush via
+/// [`persist_window_geometry`].
+fn capture_window_geometry_in_memory(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
+    let state = app.state::<app_core::state::AppState>();
+    let count = app.webview_windows().len().max(1) as u32;
+    let scale = window.scale_factor().unwrap_or(1.0);
+
+    // Prefer logical so a DPI change between sessions doesn't blow the size up.
+    let size = window
+        .inner_size()
+        .map(|s| s.to_logical::<f64>(scale))
+        .ok();
+    let pos = window
+        .outer_position()
+        .map(|p| p.to_logical::<f64>(scale))
+        .ok();
+    let maximized = window.is_maximized().unwrap_or(false);
+
+    let mut cfg = state.config.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(s) = size {
+        cfg.window_width = Some(s.width.round().max(MIN_WINDOW_W as f64) as u32);
+        cfg.window_height = Some(s.height.round().max(MIN_WINDOW_H as f64) as u32);
+    }
+    if let Some(p) = pos {
+        cfg.window_x = Some(p.x.round() as i32);
+        cfg.window_y = Some(p.y.round() as i32);
+    }
+    cfg.window_maximized = maximized;
+    cfg.window_count = Some(count);
+}
+
+/// Snapshot this window's geometry and write `settings.json`.
+///
+/// Must stay **synchronous** on the close path — on macOS the process can
+/// exit as soon as the last window finishes closing, so an async save races
+/// the teardown and silently loses the write.
+fn persist_window_geometry(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
+    capture_window_geometry_in_memory(app, window);
+    let state = app.state::<app_core::state::AppState>();
+    let path = state.config_path.clone();
+    let cfg = state.config.lock().unwrap_or_else(|e| e.into_inner());
+    let _ = cfg.save(&path);
+}
+
+/// True when `(x, y)` intersects any connected monitor (with a small slack
+/// for title bars / off-by-one). False when the saved position is stranded
+/// on a monitor that has since been unplugged.
+fn position_is_on_screen(window: &tauri::WebviewWindow, x: i32, y: i32) -> bool {
+    let Ok(monitors) = window.available_monitors() else {
+        return true; // can't probe — better to try restore than skip
+    };
+    monitors.iter().any(|m| {
+        let pos = m.position();
+        let size = m.size();
+        let mw = size.width as i32;
+        let mh = size.height as i32;
+        x >= pos.x - 100 && y >= pos.y - 100 && x < pos.x + mw && y < pos.y + mh
+    })
+}
+
+/// Apply saved geometry to `window`. Size/position are logical pixels.
+fn restore_window_geometry(window: &tauri::WebviewWindow, width: u32, height: u32, x: i32, y: i32, maximized: bool) {
+    if maximized {
+        let _ = window.maximize();
+        return;
+    }
+    let w = width.max(MIN_WINDOW_W);
+    let h = height.max(MIN_WINDOW_H);
+    let _ = window.set_size(LogicalSize::new(w as f64, h as f64));
+    if position_is_on_screen(window, x, y) {
+        let _ = window.set_position(LogicalPosition::new(x as f64, y as f64));
+    }
+}
+
 /// Build and run the Tauri application.
 ///
 /// Registers all Tauri plugins (file opener, native dialog) and every
@@ -99,6 +180,56 @@ pub fn run() {
                         let _ = storage::logging::purge_old_logs(&log_dir, 7);
                     });
                 });
+            }
+
+            // Restore per-window geometry (size / position / maximized) from
+            // settings.json. Only applies when the current window count matches
+            // the count recorded at last save — a different multi-window layout
+            // falls back to the defaults from tauri.conf.json.
+            {
+                let state: tauri::State<'_, app_core::state::AppState> = app.state();
+                let windows = app.webview_windows();
+                let current_count = windows.len() as u32;
+                let (should_restore, width, height, x, y, maximized) = {
+                    let cfg = state.config.lock().unwrap_or_else(|e| e.into_inner());
+                    let should_restore = cfg.window_count == Some(current_count);
+                    (
+                        should_restore,
+                        cfg.window_width.unwrap_or(0),
+                        cfg.window_height.unwrap_or(0),
+                        cfg.window_x.unwrap_or(0),
+                        cfg.window_y.unwrap_or(0),
+                        cfg.window_maximized,
+                    )
+                };
+
+                for (_label, window) in windows {
+                    if should_restore && width > 0 && height > 0 {
+                        restore_window_geometry(&window, width, height, x, y, maximized);
+                    }
+
+                    // Persist geometry when the window is about to go away.
+                    // CloseRequested must write disk **synchronously** —
+                    // see `persist_window_geometry`. Moved/Resized only
+                    // refresh the in-memory snapshot (drag frames must not
+                    // thrash settings.json); the close-path write is what
+                    // survives a normal quit. Cmd+Q / last-window-close on
+                    // macOS still hit CloseRequested for each window.
+                    let app_handle = app.handle().clone();
+                    let window_for_save = window.clone();
+                    window.on_window_event(move |event| {
+                        use tauri::WindowEvent;
+                        match event {
+                            WindowEvent::CloseRequested { .. } => {
+                                persist_window_geometry(&app_handle, &window_for_save);
+                            }
+                            WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
+                                capture_window_geometry_in_memory(&app_handle, &window_for_save);
+                            }
+                            _ => {}
+                        }
+                    });
+                }
             }
 
             // Listen for OS theme changes and re-emit resolved theme when auto is enabled.
@@ -484,6 +615,16 @@ pub fn run() {
             app_core::commands::requests_duplicate,
             app_core::commands::requests_open_in_editor,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // Belt-and-suspenders for macOS: if a close path skipped
+            // CloseRequested, flush every remaining window's geometry when
+            // the app is about to exit.
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                for window in app_handle.webview_windows().values() {
+                    persist_window_geometry(app_handle, window);
+                }
+            }
+        });
 }
