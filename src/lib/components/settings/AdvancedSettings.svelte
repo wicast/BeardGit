@@ -114,6 +114,17 @@
   let gitRevLabel = $derived(
     isDirtyBuild ? appGitRev.slice(0, -"-dirty".length) : appGitRev,
   );
+  /** Transient "Copied" chip after clicking the git rev. */
+  let gitRevCopied = $state(false);
+
+  function copyGitRev() {
+    if (!appGitRev) return;
+    void navigator.clipboard?.writeText(appGitRev);
+    gitRevCopied = true;
+    window.setTimeout(() => {
+      gitRevCopied = false;
+    }, 1500);
+  }
 
   let autoCheck = $state(true);
   let checking = $state(false);
@@ -290,14 +301,22 @@
           {appVersion}
         </span>
         {#if appGitRev}
-          <span
+          <button
+            type="button"
             class="git-rev"
             class:dirty={isDirtyBuild}
             data-testid="update-current-git-rev"
-            title={isDirtyBuild ? m.update_git_rev_dirty() : m.update_git_rev()}
+            title={isDirtyBuild
+              ? m.update_git_rev_dirty()
+              : m.update_git_rev()}
+            onclick={copyGitRev}
           >
-            {gitRevLabel}{#if isDirtyBuild}<span class="git-rev-dirty">-dirty</span>{/if}
-          </span>
+            {#if gitRevCopied}
+              {m.toast_copied()}
+            {:else}
+              {gitRevLabel}{#if isDirtyBuild}<span class="git-rev-dirty">-dirty</span>{/if}
+            {/if}
+          </button>
         {/if}
       </div>
     </FormRow>
@@ -465,9 +484,23 @@
     font-size: var(--font-size-xs);
     color: var(--text-secondary);
     letter-spacing: 0.02em;
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    text-align: right;
+  }
+
+  .git-rev:hover {
+    color: var(--text-primary);
+    text-decoration: underline;
   }
 
   .git-rev.dirty {
+    color: var(--accent-orange);
+  }
+
+  .git-rev.dirty:hover {
     color: var(--accent-orange);
   }
 

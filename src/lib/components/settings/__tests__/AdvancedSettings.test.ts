@@ -12,7 +12,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render } from "@testing-library/svelte";
+import { cleanup, fireEvent, render } from "@testing-library/svelte";
 import { tick } from "svelte";
 
 const osTypeMock = vi.fn(() => "macos");
@@ -134,6 +134,22 @@ describe("AdvancedSettings — git revision under current version", () => {
     expect(rev.textContent).toContain("abc1234");
     expect(rev.textContent).not.toContain("-dirty");
     expect(rev.classList.contains("dirty")).toBe(false);
+    vi.unstubAllEnvs();
+  });
+
+  it("copies the full rev (including -dirty) on click", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    vi.stubEnv("VITE_APP_GIT_REV", "abc1234-dirty");
+
+    const { getByTestId } = await renderSettled();
+    const rev = getByTestId("update-current-git-rev");
+    await fireEvent.click(rev);
+
+    expect(writeText).toHaveBeenCalledWith("abc1234-dirty");
     vi.unstubAllEnvs();
   });
 });
