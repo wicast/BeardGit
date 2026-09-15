@@ -30,7 +30,7 @@ import {
   createTagAndRelease as apiCreateTagAndRelease,
 } from "../api/tauri";
 import { runMutation } from "../api/runMutation";
-import { fetchListIntoStore } from "../utils/store-helpers";
+import { createFetchGuard, fetchListIntoStore } from "../utils/store-helpers";
 import { withTimeout } from "../utils/withTimeout";
 import { addToast } from "./toast";
 import * as m from "$lib/paraglide/messages";
@@ -69,6 +69,9 @@ export const releaseTagSet = derived(
 /** Active upload task IDs keyed by release tag (for UI progress rows). */
 export const activeUploads = writable<Map<string, Set<TaskId>>>(new Map());
 
+/** Last-wins guard so a project's in-flight list/detail cannot land after switch. */
+const fetchGuard = createFetchGuard();
+
 /** Fetch the releases list (newest 30). Replaces current list. */
 export async function refreshReleases(): Promise<void> {
   await fetchListIntoStore(
@@ -78,6 +81,7 @@ export async function refreshReleases(): Promise<void> {
     () => apiList(30),
     [],
     (r) => r.tag,
+    fetchGuard,
   );
   if (get(selectedReleaseTag) === null) {
     releaseDetail.set(null);
@@ -273,8 +277,9 @@ export async function doDeleteAsset(
   await refreshSelectedDetail();
 }
 
-/** Reset all release state (on project switch). */
+/** Reset all release state (when leaving a project). */
 export function clearReleaseState(): void {
+  fetchGuard.invalidate();
   releases.set([]);
   selectedReleaseTag.set(null);
   releaseDetail.set(null);

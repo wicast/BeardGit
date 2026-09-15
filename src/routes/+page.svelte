@@ -1016,9 +1016,13 @@
       {:else if activeView === "pipelines"}
         <LazyComponent loader={() => import("$lib/components/pipeline/PipelineView.svelte")} />
       {:else if activeView === "stashes"}
-        <StashView />
+        {#key $activeProject?.path ?? ""}
+          <StashView />
+        {/key}
       {:else if activeView === "tags"}
-        <TagView />
+        {#key $activeProject?.path ?? ""}
+          <TagView />
+        {/key}
       {:else if activeView === "branches"}
         <div class="branch-layout">
           <div class="branch-main">
@@ -1038,18 +1042,22 @@
           {/if}
         </div>
       {:else if activeView === "worktrees"}
-        <WorktreeList
-          onNavigateToGraph={(oid) => { navigateToCommit(oid); handleNavigate("graph"); }}
-        />
+        {#key $activeProject?.path ?? ""}
+          <WorktreeList
+            onNavigateToGraph={(oid) => { navigateToCommit(oid); handleNavigate("graph"); }}
+          />
+        {/key}
       {:else if activeView === "reflog"}
         <div class="branch-layout">
           <div class="branch-main">
-            <ReflogView
-              onContextMenu={handleReflogContextMenu}
-              onNavigateToGraph={(oid) => { navigateToCommit(oid); handleNavigate("graph"); }}
-              onNavigate={handleNavigate}
-              onFileClick={handleReflogFileClick}
-            />
+            {#key $activeProject?.path ?? ""}
+              <ReflogView
+                onContextMenu={handleReflogContextMenu}
+                onNavigateToGraph={(oid) => { navigateToCommit(oid); handleNavigate("graph"); }}
+                onNavigate={handleNavigate}
+                onFileClick={handleReflogFileClick}
+              />
+            {/key}
           </div>
           {#if $reflogFileDiff}
             <ResizableDiffPanel>
@@ -1065,7 +1073,9 @@
           {/if}
         </div>
       {:else if activeView === "submodules"}
-        <SubmoduleList />
+        {#key $activeProject?.path ?? ""}
+          <SubmoduleList />
+        {/key}
       {:else if activeView === "bisect"}
         <LazyComponent loader={() => import("$lib/components/bisect/BisectWorkflow.svelte")} />
       {:else if activeView === "ai-config"}
@@ -1121,7 +1131,9 @@
       {:else if activeView === "issues"}
         <IssueView />
       {:else if activeView === "releases"}
-        <LazyComponent loader={() => import("$lib/components/releases/ReleaseView.svelte")} />
+        {#key $activeProject?.path ?? ""}
+          <LazyComponent loader={() => import("$lib/components/releases/ReleaseView.svelte")} />
+        {/key}
       {:else if activeView === "repo-config"}
         <RepoConfigPage bind:this={repoConfigPageRef} />
       {:else if activeView === "requests"}

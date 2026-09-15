@@ -6,7 +6,7 @@ import { writable, derived } from "svelte/store";
 import type { ReflogEntry } from "../types";
 import type { RawDiffContent } from "./graph";
 import * as api from "../api/tauri";
-import { fetchIntoStore } from "../utils/store-helpers";
+import { createFetchGuard, fetchIntoStore } from "../utils/store-helpers";
 
 /** All loaded reflog entries (most recent first). */
 export const reflogEntries = writable<ReflogEntry[]>([]);
@@ -29,9 +29,12 @@ export const reflogLoading = writable(false);
 /** File diff content for the selected reflog commit. */
 export const reflogFileDiff = writable<RawDiffContent | null>(null);
 
+/** Last-wins guard so a project's in-flight list cannot land after switch. */
+const fetchGuard = createFetchGuard();
+
 /** Load reflog entries from the backend. */
 export async function loadReflog(limit = 100): Promise<void> {
-  await fetchIntoStore(reflogEntries, reflogLoading, () => api.getReflog(limit), []);
+  await fetchIntoStore(reflogEntries, reflogLoading, () => api.getReflog(limit), [], fetchGuard);
 }
 
 /** Select a reflog entry by its index. */
@@ -45,8 +48,9 @@ export function clearReflogSelection(): void {
   reflogFileDiff.set(null);
 }
 
-/** Clear all reflog state (e.g., on project switch). */
+/** Clear all reflog state (when leaving a project). */
 export function clearReflogState(): void {
+  fetchGuard.invalidate();
   reflogEntries.set([]);
   selectedReflogIndex.set(null);
   reflogFileDiff.set(null);

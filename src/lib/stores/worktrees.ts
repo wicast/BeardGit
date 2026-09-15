@@ -16,13 +16,16 @@ import {
 } from "$lib/api/tauri";
 import { runMutation } from "$lib/api/runMutation";
 import type { WorktreeInfo, AiWorktree, EnrichedWorktree } from "$lib/types";
-import { fetchIntoStore } from "$lib/utils/store-helpers";
+import { createFetchGuard, fetchIntoStore } from "$lib/utils/store-helpers";
 
 /** All worktrees for the active repository, enriched with AI data. */
 export const worktrees = writable<EnrichedWorktree[]>([]);
 
 /** True while a worktree list refresh is in progress. */
 export const worktreeLoading = writable(false);
+
+/** Last-wins guard so a project's in-flight list cannot land after switch. */
+const fetchGuard = createFetchGuard();
 
 /**
  * Join git worktrees with AI worktree data.
@@ -68,6 +71,7 @@ export async function refreshWorktrees() {
       return enrichWorktrees(gitList, aiList);
     },
     [],
+    fetchGuard,
   );
 }
 
@@ -102,8 +106,9 @@ export async function cleanupAiWorktree(provider: string, worktreePath: string) 
   });
 }
 
-/** Reset worktree state. Called on repo switch. */
+/** Reset worktree state. Called when leaving a project. */
 export function clearWorktreeState() {
+  fetchGuard.invalidate();
   worktrees.set([]);
   worktreeLoading.set(false);
 }

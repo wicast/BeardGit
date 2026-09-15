@@ -38,22 +38,29 @@ export const blameActiveTab = writable<'blame' | 'history'>('blame');
 /** The view the user was on before entering blame, for back navigation. */
 export const blamePreviousView = writable<string>('graph');
 
+/** Last-wins tokens so a project's in-flight fetches cannot land after switch. */
+let blameToken = 0;
+let historyToken = 0;
+
 /**
  * Load per-line blame data for a file, optionally at a specific commit.
  */
 export async function loadBlame(path: string, oid?: string): Promise<void> {
+  const token = ++blameToken;
   blamePath.set(path);
   blameOid.set(oid ?? null);
   blameLoading.set(true);
   blameError.set(null);
   try {
     const lines = await blameFile(path, oid);
+    if (token !== blameToken) return;
     blameLines.set(lines);
   } catch (e) {
+    if (token !== blameToken) return;
     blameError.set(getErrorMessage(e));
     blameLines.set([]);
   } finally {
-    blameLoading.set(false);
+    if (token === blameToken) blameLoading.set(false);
   }
 }
 
@@ -61,14 +68,17 @@ export async function loadBlame(path: string, oid?: string): Promise<void> {
  * Load the commit history for a file (up to 100 entries).
  */
 export async function loadFileHistory(path: string): Promise<void> {
+  const token = ++historyToken;
   fileHistoryLoading.set(true);
   try {
     const entries = await fileHistory(path, 100);
+    if (token !== historyToken) return;
     fileHistoryEntries.set(entries);
   } catch {
+    if (token !== historyToken) return;
     fileHistoryEntries.set([]);
   } finally {
-    fileHistoryLoading.set(false);
+    if (token === historyToken) fileHistoryLoading.set(false);
   }
 }
 
@@ -84,8 +94,10 @@ export async function openBlame(path: string, oid?: string): Promise<void> {
   ]);
 }
 
-/** Reset all blame/history state. Called on repo switch. */
+/** Reset all blame/history state. Called when leaving a project. */
 export function clearBlameState() {
+  blameToken++;
+  historyToken++;
   blamePath.set(null);
   blameOid.set(null);
   blameLines.set([]);

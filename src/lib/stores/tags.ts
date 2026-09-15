@@ -21,7 +21,7 @@ import {
   pushTag as apiPushTag,
 } from "../api/tauri";
 import { runMutation } from "../api/runMutation";
-import { fetchPageIntoStore } from "../utils/store-helpers";
+import { createFetchGuard, fetchPageIntoStore } from "../utils/store-helpers";
 
 // ---------------------------------------------------------------------------
 // List state
@@ -34,6 +34,9 @@ export const tagFilter = writable("");
 
 const PAGE_SIZE = 30;
 let currentPage = 1;
+
+/** Last-wins guard so a project's in-flight pages cannot land after switch. */
+const fetchGuard = createFetchGuard();
 
 /** Snapshot of tags before filter was applied, so we can restore without re-fetching. */
 let preFilterSnapshot: TagInfo[] = [];
@@ -81,6 +84,7 @@ export async function refreshTags() {
     0,
     () => listTagsPaginated(PAGE_SIZE, 1),
     PAGE_SIZE,
+    fetchGuard,
   );
   preFilterSnapshot = get(tags);
 
@@ -104,17 +108,21 @@ export async function loadMoreTags() {
     currentPage - 1, // > 0 triggers append
     () => listTagsPaginated(PAGE_SIZE, currentPage),
     PAGE_SIZE,
+    fetchGuard,
   );
   preFilterSnapshot = get(tags);
 }
 
 /** Backend fallback when client-side filter yields no results. */
 export async function searchTagsBackend(query: string) {
+  const token = fetchGuard.next();
   try {
     const results = await apiSearchTags(query);
+    if (!fetchGuard.isCurrent(token)) return;
     tags.set(results);
     hasMoreTags.set(false); // Search returns all matches
   } catch {
+    if (!fetchGuard.isCurrent(token)) return;
     tags.set([]);
   }
 }
@@ -226,8 +234,11 @@ export async function doPushTag(tagName: string | null, remote: string) {
   });
 }
 
-/** Reset all tag selection/detail state. Called on repo switch. */
+/** Reset all tag selection/detail state. Called when leaving a project. */
 export function clearTagState() {
+  fetchGuard.invalidate();
+  currentPage = 1;
+  preFilterSnapshot = [];
   tags.set([]);
   selectedTagName.set(null);
   selectedCommitInfo.set(null);

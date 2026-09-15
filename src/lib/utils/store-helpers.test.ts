@@ -1,6 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
 import { writable, get } from "svelte/store";
-import { fetchIntoStore, fetchListIntoStore, fetchPageIntoStore } from "./store-helpers";
+import {
+  createFetchGuard,
+  fetchIntoStore,
+  fetchListIntoStore,
+  fetchPageIntoStore,
+} from "./store-helpers";
 
 describe("fetchIntoStore", () => {
   it("sets data on success", async () => {
@@ -27,6 +32,41 @@ describe("fetchIntoStore", () => {
     await fetchIntoStore(store, loading, async () => ["x"], []);
     expect(loadingStates).toContain(true);
     expect(get(loading)).toBe(false);
+  });
+
+  it("discards a stale response after guard.invalidate()", async () => {
+    const store = writable<string[]>([]);
+    const loading = writable(false);
+    const guard = createFetchGuard();
+
+    let resolveSlow: (v: string[]) => void = () => {};
+    const slow = new Promise<string[]>((r) => { resolveSlow = r; });
+
+    const pending = fetchIntoStore(store, loading, () => slow, [], guard);
+    guard.invalidate(); // project switch
+    await fetchIntoStore(store, loading, async () => ["fresh"], [], guard);
+    resolveSlow(["stale-from-prev-project"]);
+    await pending;
+
+    expect(get(store)).toEqual(["fresh"]);
+    expect(get(loading)).toBe(false);
+  });
+
+  it("last concurrent fetch wins without invalidate", async () => {
+    const store = writable<string[]>([]);
+    const loading = writable(false);
+    const guard = createFetchGuard();
+
+    let resolveFirst: (v: string[]) => void = () => {};
+    const first = new Promise<string[]>((r) => { resolveFirst = r; });
+
+    const p1 = fetchIntoStore(store, loading, () => first, [], guard);
+    const p2 = fetchIntoStore(store, loading, async () => ["second"], [], guard);
+    await p2;
+    resolveFirst(["first"]);
+    await p1;
+
+    expect(get(store)).toEqual(["second"]);
   });
 });
 

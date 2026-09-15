@@ -17,12 +17,15 @@ import {
   stashDrop as apiStashDrop,
 } from "../api/tauri";
 import { runMutation } from "../api/runMutation";
-import { fetchIntoStore } from "../utils/store-helpers";
+import { createFetchGuard, fetchIntoStore } from "../utils/store-helpers";
 
 export const stashes = writable<StashEntry[]>([]);
 export const stashesLoading = writable(false);
 export const selectedStashIndex = writable<number | null>(null);
 export const selectedStashDiff = writable<FileDiff[] | null>(null);
+
+/** Last-wins guard so a project's in-flight list cannot land after switch. */
+const fetchGuard = createFetchGuard();
 
 /**
  * Re-fetch the stash list for the active project. Thin wrapper over
@@ -35,7 +38,7 @@ export async function refreshStashes(): Promise<void> {
 
 /** Refresh the stash entry list. Clears selection if the selected stash was dropped. */
 export async function loadStashes() {
-  await fetchIntoStore(stashes, stashesLoading, apiStashEntries, []);
+  await fetchIntoStore(stashes, stashesLoading, apiStashEntries, [], fetchGuard);
 
   // If selected stash no longer exists, clear selection
   const selected = get(selectedStashIndex);
@@ -106,8 +109,9 @@ export async function doStashDrop(index: number) {
   });
 }
 
-/** Reset all stash selection/detail state. Called on repo switch. */
+/** Reset all stash selection/detail state. Called when leaving a project. */
 export function clearStashState() {
+  fetchGuard.invalidate();
   stashes.set([]);
   selectedStashIndex.set(null);
   selectedStashDiff.set(null);

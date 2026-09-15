@@ -13,11 +13,15 @@
 import { writable, derived } from "svelte/store";
 import { getRemotes } from "../api/tauri";
 import type { RemoteInfo } from "../types";
+import { createFetchGuard } from "../utils/store-helpers";
 
 export const remotes = writable<RemoteInfo[]>([]);
 
 /** Just the names, in the order reported by `git remote`. */
 export const remoteNames = derived(remotes, ($r) => $r.map((r) => r.name));
+
+/** Last-wins guard so a project's in-flight list cannot land after switch. */
+const fetchGuard = createFetchGuard();
 
 /**
  * Re-fetch the remote list from the backend.
@@ -27,8 +31,10 @@ export const remoteNames = derived(remotes, ($r) => $r.map((r) => r.name));
  * critical path.
  */
 export async function refreshRemotes(): Promise<void> {
+  const token = fetchGuard.next();
   try {
     const list = await getRemotes();
+    if (!fetchGuard.isCurrent(token)) return;
     // Defensive: a misbehaving backend (or a test harness without a
     // get_remotes mock) must not poison the store — a non-array here
     // would crash every derived that does `$remotes.find(...)`.
@@ -38,7 +44,14 @@ export async function refreshRemotes(): Promise<void> {
   }
 }
 
+/** Invalidate in-flight remote fetches. Called when leaving a project. */
+export function clearRemotesState(): void {
+  fetchGuard.invalidate();
+  remotes.set([]);
+}
+
 /** Test helper — reset store state between cases. */
 export function __resetRemotesForTests(): void {
+  fetchGuard.invalidate();
   remotes.set([]);
 }

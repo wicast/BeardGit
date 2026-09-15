@@ -18,7 +18,7 @@ import {
   removeSubmodule as apiRemove,
   submoduleAbsPath as apiAbsPath,
 } from "../api/tauri";
-import { fetchIntoStore } from "../utils/store-helpers";
+import { createFetchGuard, fetchIntoStore } from "../utils/store-helpers";
 
 /** List of submodules in the active repository. */
 export const submodules = writable<SubmoduleInfo[]>([]);
@@ -26,9 +26,19 @@ export const submodules = writable<SubmoduleInfo[]>([]);
 /** Whether the submodule list is currently loading. */
 export const submodulesLoading = writable(false);
 
+/** Last-wins guard so a project's in-flight list cannot land after switch. */
+const fetchGuard = createFetchGuard();
+
 /** Fetch the submodule list from the backend. */
 export async function refreshSubmodules() {
-  await fetchIntoStore(submodules, submodulesLoading, () => apiList(), []);
+  await fetchIntoStore(submodules, submodulesLoading, () => apiList(), [], fetchGuard);
+}
+
+/** Reset submodule list state. Called when leaving a project. */
+export function clearSubmoduleState(): void {
+  fetchGuard.invalidate();
+  submodules.set([]);
+  submodulesLoading.set(false);
 }
 
 /** Initialize a submodule and refresh the list. */

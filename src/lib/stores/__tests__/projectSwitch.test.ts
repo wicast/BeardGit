@@ -50,7 +50,8 @@ vi.mock("$lib/stores/issues", () => ({ clearIssueState: vi.fn() }));
 vi.mock("$lib/stores/releases", () => ({ clearReleaseState: vi.fn() }));
 vi.mock("$lib/stores/reflog", () => ({ clearReflogState: vi.fn(), loadReflog: vi.fn() }));
 vi.mock("$lib/stores/conflict", () => ({ refreshConflictStatus: vi.fn() }));
-vi.mock("$lib/stores/remotes", () => ({ refreshRemotes: vi.fn() }));
+vi.mock("$lib/stores/remotes", () => ({ refreshRemotes: vi.fn(), clearRemotesState: vi.fn() }));
+vi.mock("$lib/stores/submodules", () => ({ clearSubmoduleState: vi.fn(), refreshSubmodules: vi.fn() }));
 vi.mock("$lib/stores/mutations", () => ({ flushPendingForActiveProject: vi.fn() }));
 vi.mock("$lib/stores/initRepoDialog", () => ({
   requestOpenInitRepoDialog: vi.fn(),

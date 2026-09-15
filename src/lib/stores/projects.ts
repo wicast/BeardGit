@@ -50,6 +50,7 @@ import { clearTagState } from "./tags";
 import { clearStashState } from "./stashes";
 import { clearBlameState } from "./blame";
 import { clearWorktreeState } from "./worktrees";
+import { clearSubmoduleState } from "./submodules";
 import { clearMrPrState } from "./mr-pr";
 import { clearIssueState } from "./issues";
 import { clearReleaseState } from "./releases";
@@ -76,7 +77,7 @@ import {
   getCompositeTerminals,
 } from "./tabs";
 import { writable } from "svelte/store";
-import { refreshRemotes } from "./remotes";
+import { refreshRemotes, clearRemotesState } from "./remotes";
 
 // Re-export for backward compatibility with components that read these.
 export { openTabs, activeTabIndex };
@@ -280,6 +281,26 @@ export async function openProjectTab(path: string) {
   }
 }
 
+/**
+ * Clear module-level singleton stores that are not per-repo.
+ *
+ * Called when LEAVING a project (before `activeTabIndex` flips) so that:
+ * 1. In-flight fetches for the outgoing project are invalidated and cannot
+ *    write into the store after the incoming project is active.
+ * 2. A remounting view (keyed by project path) can start a clean fetch for
+ *    the incoming project without racing a clear that happens after the flip.
+ */
+function clearModuleSingletonStores(): void {
+  clearTagState();
+  clearStashState();
+  clearBlameState();
+  clearWorktreeState();
+  clearSubmoduleState();
+  clearReleaseState();
+  clearReflogState();
+  clearRemotesState();
+}
+
 /** Switch to a tab by unified index. Handles project-specific loading. */
 export async function switchToTab(tabIndex: number) {
   const tabs = get(openTabs);
@@ -291,6 +312,15 @@ export async function switchToTab(tabIndex: number) {
   // from `get(activeProject)` after `activeTabIndex.set` below would read
   // the incoming tab, which is the bug this fix corrects.
   const prevTab = prevIdx >= 0 && prevIdx < tabs.length ? tabs[prevIdx] : null;
+  const prevPath = tabProjectPath(prevTab);
+  const nextPath = tabProjectPath(tab);
+
+  // Leaving one project for another (or for a terminal): drop the
+  // module-level singleton lists so the next project starts clean and
+  // any still-in-flight response for the previous project is discarded.
+  if (tabIndex !== prevIdx && prevPath !== null && prevPath !== nextPath) {
+    clearModuleSingletonStores();
+  }
 
   // Set active index immediately for instant tab highlight
   activeTabIndex.set(tabIndex);
@@ -301,8 +331,8 @@ export async function switchToTab(tabIndex: number) {
   // project view to restore.
   if (tabIndex !== prevIdx) {
     projectSwitchCallback?.({
-      prevPath: tabProjectPath(prevTab),
-      nextPath: tabProjectPath(tab),
+      prevPath,
+      nextPath,
     });
   }
 
@@ -327,15 +357,11 @@ async function activateProjectTab(tabIndex: number) {
   // they live per-repo in the RepoState container and are swapped by
   // `setActiveRepoPath` below, so their position/selection/list survive the
   // switch (spec 08). Only the project-specific branch scope of the (still
-  // module-level) graph view mode is dropped. The stores below still use
-  // module-level singletons and must be cleared until they migrate.
+  // module-level) graph view mode is dropped. Module-level singleton lists
+  // (tags/stashes/worktrees/reflog/releases/submodules/remotes/blame) are
+  // cleared on LEAVE in `switchToTab` — clearing them here would invalidate
+  // a remounting view's fetch that already started for the incoming project.
   resetGraphViewScope();
-  clearTagState();
-  clearStashState();
-  clearBlameState();
-  clearWorktreeState();
-  clearReleaseState();
-  clearReflogState();
 
   const tabs = get(openTabs);
   const targetTab = tabs[tabIndex];
@@ -544,14 +570,9 @@ export async function closeTab(tabIndex: number) {
     clearGraphState();
     resetGraphViewScope();
     clearBranchState();
-    clearTagState();
-    clearStashState();
-    clearBlameState();
-    clearWorktreeState();
+    clearModuleSingletonStores();
     clearMrPrState();
     clearIssueState();
-    clearReleaseState();
-    clearReflogState();
     clearChangesState();
     repoInfo.set(null);
     branches.set([]);
@@ -560,13 +581,21 @@ export async function closeTab(tabIndex: number) {
     return;
   }
 
-  activeTabIndex.set(newActiveIdx);
-  const newTabs = get(openTabs);
+  // Closing the active tab activates a neighbour: clear singleton stores
+  // for the outgoing project before the index flips (same rule as switchToTab).
+  // Closing an inactive tab must NOT wipe the still-active project's lists.
+  const newTabsAfterClose = get(openTabs);
   const nextActiveTab =
-    newActiveIdx >= 0 && newActiveIdx < newTabs.length
-      ? newTabs[newActiveIdx]
+    newActiveIdx >= 0 && newActiveIdx < newTabsAfterClose.length
+      ? newTabsAfterClose[newActiveIdx]
       : null;
   const nextActivePath = tabProjectPath(nextActiveTab);
+
+  if (prevActivePath !== null && prevActivePath !== nextActivePath) {
+    clearModuleSingletonStores();
+  }
+
+  activeTabIndex.set(newActiveIdx);
 
   // Re-run the view-memory choreography ONLY when the active project
   // actually changed. Closing an inactive tab keeps the same active
@@ -580,8 +609,8 @@ export async function closeTab(tabIndex: number) {
     });
   }
 
-  if (newActiveIdx >= 0 && newActiveIdx < newTabs.length &&
-      (newTabs[newActiveIdx].kind === "project" || newTabs[newActiveIdx].kind === "composite")) {
+  if (newActiveIdx >= 0 && newActiveIdx < newTabsAfterClose.length &&
+      (newTabsAfterClose[newActiveIdx].kind === "project" || newTabsAfterClose[newActiveIdx].kind === "composite")) {
     await activateProjectTab(newActiveIdx);
   } else if (nextActiveTab?.kind === "terminal" && prevActivePath !== null) {
     // The active project was closed and a terminal tab takes its place:
