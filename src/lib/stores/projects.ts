@@ -15,6 +15,7 @@ import {
   getOpenProjects as apiGetOpenProjects,
   getActiveProjectIndex as apiGetActiveProjectIndex,
   restoreProjects as apiRestoreProjects,
+  reorderProject as apiReorderProject,
   getBranches as apiGetBranches,
   getStatusSummary as apiGetStatusSummary,
   detectProject,
@@ -247,17 +248,34 @@ export async function openProjectTab(path: string) {
   const projects = await apiGetOpenProjects();
   syncProjectTabs(projects);
 
-  // If the project already has a tab, switch to it
+  // If the project already has a tab (plain or composite), switch to it.
   const tabs = get(openTabs);
   const existingIdx = tabs.findIndex(
-    (t) => t.kind === "project" && t.project.path === path,
+    (t) =>
+      (t.kind === "project" || t.kind === "composite") &&
+      t.project.path === path,
   );
 
   if (existingIdx >= 0) {
     await switchToTab(existingIdx);
   } else {
-    // Add new tab
+    // Insert to the right of the active tab (see addProjectTab).
     const tabIdx = addProjectTab(info);
+
+    // `open_project` appends on the Rust side. If the tab was inserted
+    // mid-bar, sync backend order so project indices still match the
+    // unified tab order used by switch/close.
+    const desiredProjectIdx = tabIndexToProjectIndex(tabIdx);
+    const rustIdx = projects.findIndex((p) => p.path === path);
+    if (rustIdx >= 0 && desiredProjectIdx >= 0 && rustIdx !== desiredProjectIdx) {
+      try {
+        await apiReorderProject(rustIdx, desiredProjectIdx);
+      } catch {
+        // Non-fatal: tab is already placed; indices may drift until the
+        // next drag-reorder, but the open/switch path still works.
+      }
+    }
+
     await switchToTab(tabIdx);
   }
 }

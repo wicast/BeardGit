@@ -112,13 +112,21 @@ function findSegmentIndex(segments: LinkedSegment[], segment: LinkedSegment): nu
   });
 }
 
-/** Insert a project tab at the end and return its unified index. */
+/**
+ * Insert a project tab immediately to the right of the active tab
+ * (falling back to the end when nothing is active) and return its
+ * unified index. Opening a worktree/submodule from an open project
+ * therefore lands next to that project instead of at the far right.
+ */
 export function addProjectTab(project: ProjectInfo): number {
   const tabs = get(openTabs);
   const newTab: Tab = { kind: "project", project };
-  const newTabs = [...tabs, newTab];
+  const active = get(activeTabIndex);
+  const insertAt = active >= 0 && active < tabs.length ? active + 1 : tabs.length;
+  const newTabs = [...tabs];
+  newTabs.splice(insertAt, 0, newTab);
   openTabs.set(newTabs);
-  return newTabs.length - 1;
+  return insertAt;
 }
 
 /** Remove a tab by unified index. Returns the new suggested active index. */

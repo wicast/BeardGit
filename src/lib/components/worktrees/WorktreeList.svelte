@@ -62,6 +62,11 @@
     openProjectTab(path);
   }
 
+  /** Double-click opens the worktree as a project tab (main worktree focuses the existing one). */
+  function handleDoubleClick(wt: EnrichedWorktree) {
+    handleOpenInTab(wt.path);
+  }
+
   function handleRemove(path: string) {
     forceRemove = false;
     confirmRemovePath = path;
@@ -172,6 +177,7 @@
   {getKey}
   onRefresh={refreshWorktrees}
   onContextMenu={handleContextMenu}
+  onDoubleClick={handleDoubleClick}
   memoryKey={scoped("worktrees.list")}
 >
   {#snippet headerActions()}
