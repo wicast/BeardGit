@@ -468,22 +468,50 @@ pub fn get_active_project_index(state: State<'_, AppState>) -> Result<Option<usi
     Ok(*state.active_index.lock().map_err(|e| e.to_string())?)
 }
 
+/// Map a remembered active path through a restore filter.
+///
+/// Keeps the index of the same path when it survived the filter; a
+/// deleted/missing path (or a never-saved index) falls back to the first
+/// valid entry — the default tab — or `None` when nothing remains.
+pub(super) fn resolve_active_after_restore(
+    active_path: Option<&str>,
+    valid_paths: &[String],
+) -> Option<usize> {
+    active_path
+        .and_then(|p| valid_paths.iter().position(|v| v == p))
+        .or_else(|| {
+            if valid_paths.is_empty() {
+                None
+            } else {
+                Some(0)
+            }
+        })
+}
+
 /// Restore persisted project tabs from config on app startup.
 ///
 /// Opens each path in `config.open_projects` as a lightweight slot (no graph).
 /// Invalid paths (deleted repos) are silently skipped and removed from config.
-/// If called multiple times, existing slots are cleared first to prevent duplicates.
+/// The remembered active tab is remapped by path so the project the user
+/// closed on is reactivated; if that project was deleted, the first surviving
+/// tab is used instead. If called multiple times, existing slots are cleared
+/// first to prevent duplicates.
 ///
 /// # Returns
 /// A [`Vec<ProjectInfo>`] of all successfully restored projects.
 #[tauri::command]
 pub fn restore_projects(state: State<'_, AppState>) -> Result<Vec<ProjectInfo>, IpcError> {
-    // Extract the paths from config then drop the lock immediately.
-    let paths = {
+    // Extract the paths and remembered active index from config then drop
+    // the lock immediately.
+    let (paths, saved_active) = {
         let config = state.config.lock().map_err(|e| e.to_string())?;
-        config.open_projects.clone()
+        (config.open_projects.clone(), config.active_project_index)
     };
     // config lock is dropped here.
+
+    // Resolve which path was active BEFORE filtering — indices shift when
+    // deleted repos are dropped, so the path is the stable identity.
+    let active_path = saved_active.and_then(|i| paths.get(i).cloned());
 
     // Parallel phase: open repos and gather metadata (I/O-heavy, benefits from parallelism).
     // Invalid paths (deleted/moved repos) are silently dropped via `filter_map`.
@@ -546,10 +574,20 @@ pub fn restore_projects(state: State<'_, AppState>) -> Result<Vec<ProjectInfo>, 
     }
     // projects lock is dropped here before acquiring config again.
 
-    // Update config to remove invalid paths.
+    // Remap the remembered active path through the filter (deleted project →
+    // first surviving tab) so `get_active_project_index` reports the tab the
+    // user closed on instead of leaving `active_index` as `None`.
+    let new_active = resolve_active_after_restore(active_path.as_deref(), &valid_paths);
+    {
+        let mut active = state.active_index.lock().map_err(|e| e.to_string())?;
+        *active = new_active;
+    }
+
+    // Update config to remove invalid paths and clamp the active index.
     {
         let mut config = state.config.lock().map_err(|e| e.to_string())?;
         config.open_projects = valid_paths;
+        config.active_project_index = new_active;
         let _ = config.save(&state.config_path);
     }
 
@@ -664,6 +702,7 @@ mod tests {
 
     use super::adjust_active_after_close;
     use super::adjust_active_after_move;
+    use super::resolve_active_after_restore;
 
     #[test]
     fn adjust_active_after_close_shifts_when_active_follows_closed() {
@@ -711,6 +750,32 @@ mod tests {
         assert_eq!(adjust_active_after_move(Some(2), 3, 0), Some(3));
         // No active project stays None.
         assert_eq!(adjust_active_after_move(None, 0, 2), None);
+    }
+
+    #[test]
+    fn restore_active_keeps_path_when_it_survives_filter() {
+        // Active was C; A was deleted before it → C is now at index 1.
+        let valid = vec!["/b".to_string(), "/c".to_string()];
+        assert_eq!(resolve_active_after_restore(Some("/c"), &valid), Some(1));
+    }
+
+    #[test]
+    fn restore_active_falls_back_to_first_when_project_deleted() {
+        // The project the user closed on no longer exists → default tab.
+        let valid = vec!["/a".to_string(), "/b".to_string()];
+        assert_eq!(resolve_active_after_restore(Some("/gone"), &valid), Some(0));
+    }
+
+    #[test]
+    fn restore_active_defaults_when_never_saved() {
+        let valid = vec!["/a".to_string()];
+        assert_eq!(resolve_active_after_restore(None, &valid), Some(0));
+    }
+
+    #[test]
+    fn restore_active_none_when_no_projects_remain() {
+        assert_eq!(resolve_active_after_restore(Some("/gone"), &[]), None);
+        assert_eq!(resolve_active_after_restore(None, &[]), None);
     }
 }
 
