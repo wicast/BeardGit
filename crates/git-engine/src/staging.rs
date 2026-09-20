@@ -29,12 +29,17 @@ impl Repository {
                 .include_untracked(true)
                 .recurse_untracked_dirs(true)
                 .include_ignored(false)
-                .renames_head_to_index(true),
+                // Match `git status`: pair delete+add into a single rename on
+                // both the HEAD→index and index→workdir sides, including
+                // content-similar (rewrite) cases. Without these the Changes
+                // view listed one D and one A for every git-considered rename.
+                .renames_head_to_index(true)
+                .renames_index_to_workdir(true)
+                .renames_from_rewrites(true),
         ))?;
 
         let mut result = Vec::new();
         for entry in statuses.iter() {
-            let path = entry.path().unwrap_or("").to_string();
             let s = entry.status();
 
             let (status, is_staged) = if s.contains(git2::Status::INDEX_NEW) {
@@ -55,6 +60,30 @@ impl Repository {
                 ("renamed".to_string(), false)
             } else {
                 continue;
+            };
+
+            // For renames libgit2's `entry.path()` is often the *old* path;
+            // the destination lives on the rename delta. Surface the new path
+            // so the Changes view lists the file as it exists now, with a
+            // single `R` row instead of a delete on the old path.
+            let path = if status == "renamed" {
+                let delta = if is_staged {
+                    entry.head_to_index()
+                } else {
+                    entry.index_to_workdir()
+                };
+                delta
+                    .as_ref()
+                    .and_then(|d| {
+                        d.new_file()
+                            .path()
+                            .map(|p| p.to_string_lossy().to_string())
+                    })
+                    .filter(|p| !p.is_empty())
+                    .or_else(|| entry.path().map(|s| s.to_string()))
+                    .unwrap_or_default()
+            } else {
+                entry.path().unwrap_or("").to_string()
             };
 
             result.push(FileStatus {
@@ -308,6 +337,58 @@ mod tests {
         let new = statuses.iter().find(|s| s.path == "new.txt").unwrap();
         assert_eq!(new.status, "new");
         assert!(!new.is_staged);
+    }
+
+    #[test]
+    fn test_file_statuses_staged_rename_is_renamed_not_delete_add() {
+        let (dir, repo) = create_repo_with_committed_file();
+        // Same content under a new path — git treats this as a rename once
+        // staged (OID match + rename detection).
+        fs::rename(
+            dir.path().join("existing.txt"),
+            dir.path().join("renamed.txt"),
+        )
+        .unwrap();
+        repo.stage_all().unwrap();
+
+        let statuses = repo.file_statuses().unwrap();
+        assert!(
+            statuses
+                .iter()
+                .any(|s| s.path == "renamed.txt" && s.status == "renamed" && s.is_staged),
+            "expected staged rename at renamed.txt, got {statuses:?}"
+        );
+        assert!(
+            !statuses
+                .iter()
+                .any(|s| s.path == "existing.txt" && s.status == "deleted"),
+            "old path must not appear as a separate deleted entry, got {statuses:?}"
+        );
+    }
+
+    #[test]
+    fn test_file_statuses_workdir_rename_is_renamed_not_delete_add() {
+        let (dir, repo) = create_repo_with_committed_file();
+        // Unstaged rename on disk (delete + create same content), not git mv.
+        fs::rename(
+            dir.path().join("existing.txt"),
+            dir.path().join("renamed.txt"),
+        )
+        .unwrap();
+
+        let statuses = repo.file_statuses().unwrap();
+        assert!(
+            statuses
+                .iter()
+                .any(|s| s.path == "renamed.txt" && s.status == "renamed" && !s.is_staged),
+            "expected workdir rename at renamed.txt, got {statuses:?}"
+        );
+        assert!(
+            !statuses
+                .iter()
+                .any(|s| s.path == "existing.txt" && s.status == "deleted"),
+            "old path must not appear as a separate deleted entry, got {statuses:?}"
+        );
     }
 
     #[test]

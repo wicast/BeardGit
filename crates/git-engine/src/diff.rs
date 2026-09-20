@@ -27,6 +27,30 @@ fn delta_status_str(delta: git2::Delta) -> &'static str {
     }
 }
 
+/// Pair delete+add deltas into renames/copies where content is similar
+/// enough (libgit2 defaults ≈ git's 50% similarity).
+///
+/// Display-only. Never call this on diffs that feed the hunk-staging patch
+/// builder (`diff_workdir` / `diff_index` / `diff_single_file`): that path
+/// models a rename as a separate delete+add and does not emit
+/// `rename from`/`rename to` headers, so a detected-rename delta would
+/// produce a patch that `git apply` rejects.
+fn detect_renames(diff: &mut Diff) -> Result<(), GitError> {
+    diff.find_similar(None)?;
+    Ok(())
+}
+
+/// Preferred path for a delta: the new path when present, else the old one
+/// (deleted files).
+fn delta_display_path(delta: &git2::DiffDelta) -> String {
+    delta
+        .new_file()
+        .path()
+        .or_else(|| delta.old_file().path())
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
 /// A single file changed in a commit, with its status relative to the first parent.
 #[derive(Debug, Clone, Serialize)]
 pub struct CommitFileChange {
@@ -153,11 +177,13 @@ impl Repository {
     /// Diff between working directory and index (unstaged changes).
     ///
     /// Rename/copy detection is intentionally NOT enabled here (nor in
-    /// [`Repository::diff_index`]): the hunk-staging patch builder
-    /// (`hunk_staging::build_patch`) models a rename as a separate
-    /// delete+add and does not emit `rename from`/`rename to` headers, so a
-    /// detected-rename delta would produce a patch that `git apply` rejects.
-    /// Callers that need rename status use `file_status_all` instead.
+    /// [`Repository::diff_index`] / [`Repository::diff_single_file`]): the
+    /// hunk-staging patch builder (`hunk_staging::build_patch`) models a
+    /// rename as a separate delete+add and does not emit `rename from`/
+    /// `rename to` headers, so a detected-rename delta would produce a patch
+    /// that `git apply` rejects. Callers that need rename status use
+    /// `file_statuses` / the stats + commit-files paths instead — those run
+    /// [`detect_renames`].
     pub fn diff_workdir(&self) -> Result<Vec<FileDiff>, GitError> {
         let repo = self.inner();
         // `recurse_untracked_dirs` matters: without it libgit2 collapses an
@@ -197,18 +223,13 @@ impl Repository {
             None
         };
 
-        let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)?;
+        let mut diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)?;
+        detect_renames(&mut diff)?;
 
         let mut files = Vec::new();
         for delta in diff.deltas() {
-            let path = delta
-                .new_file()
-                .path()
-                .unwrap_or(std::path::Path::new(""))
-                .to_string_lossy()
-                .to_string();
             files.push(CommitFileChange {
-                path,
+                path: delta_display_path(&delta),
                 status: delta_status_str(delta.status()).to_string(),
             });
         }
@@ -235,17 +256,12 @@ impl Repository {
         let from_tree = from_commit.tree()?;
         let to_tree = to_commit.tree()?;
 
-        let diff = repo.diff_tree_to_tree(Some(&from_tree), Some(&to_tree), None)?;
+        let mut diff = repo.diff_tree_to_tree(Some(&from_tree), Some(&to_tree), None)?;
+        detect_renames(&mut diff)?;
         let mut files = Vec::new();
         for delta in diff.deltas() {
-            let path = delta
-                .new_file()
-                .path()
-                .or_else(|| delta.old_file().path())
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default();
             files.push(CommitFileChange {
-                path,
+                path: delta_display_path(&delta),
                 status: delta_status_str(delta.status()).to_string(),
             });
         }
@@ -328,7 +344,8 @@ impl Repository {
         } else {
             None
         };
-        let diff = repo.diff_tree_to_tree(old_tree.as_ref(), Some(&new_tree), None)?;
+        let mut diff = repo.diff_tree_to_tree(old_tree.as_ref(), Some(&new_tree), None)?;
+        detect_renames(&mut diff)?;
         let files = collect_file_diffs(&diff)?;
         Ok(files.into_iter().map(|f| (f.path.clone(), f)).collect())
     }
@@ -396,7 +413,9 @@ impl Repository {
     /// stats and only allocates the path strings.
     pub fn diff_stats_workdir(&self) -> Result<Vec<FileDiffStat>, GitError> {
         let repo = self.inner();
-        let diff = repo.diff_index_to_workdir(
+        // Stats are display-only (Changes +/− counters), so rename detection
+        // is safe here — unlike the hunk-staging `diff_workdir` path.
+        let mut diff = repo.diff_index_to_workdir(
             None,
             Some(
                 DiffOptions::new()
@@ -405,6 +424,7 @@ impl Repository {
                     .show_untracked_content(true),
             ),
         )?;
+        detect_renames(&mut diff)?;
         collect_file_stats(&diff)
     }
 
@@ -413,7 +433,8 @@ impl Repository {
     pub fn diff_stats_index(&self) -> Result<Vec<FileDiffStat>, GitError> {
         let repo = self.inner();
         let head_tree = repo.head()?.peel_to_tree()?;
-        let diff = repo.diff_tree_to_index(Some(&head_tree), None, None)?;
+        let mut diff = repo.diff_tree_to_index(Some(&head_tree), None, None)?;
+        detect_renames(&mut diff)?;
         collect_file_stats(&diff)
     }
 }
@@ -635,13 +656,7 @@ fn collect_file_stats(diff: &Diff) -> Result<Vec<FileDiffStat>, GitError> {
         // per-line strings — the whole point of the stats path.
         let patch = git2::Patch::from_diff(diff, idx)?;
         let delta = diff.get_delta(idx).unwrap();
-        let path = delta
-            .new_file()
-            .path()
-            .or_else(|| delta.old_file().path())
-            .unwrap_or(Path::new(""))
-            .to_string_lossy()
-            .to_string();
+        let path = delta_display_path(&delta);
         let old_path = delta
             .old_file()
             .path()
@@ -1021,6 +1036,93 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "test.txt");
         assert_eq!(files[0].status, "modified");
+    }
+
+    #[test]
+    fn test_commit_files_rename_is_r_not_delete_add() {
+        let (dir, repo) = create_repo_with_file();
+        let first_oid = repo.inner().head().unwrap().target().unwrap().to_string();
+
+        // Rename test.txt → renamed.txt (same content) and commit.
+        fs::rename(dir.path().join("test.txt"), dir.path().join("renamed.txt")).unwrap();
+        let git_repo = repo.inner();
+        let sig = git2::Signature::now("Test", "test@test.com").unwrap();
+        let mut index = git_repo.index().unwrap();
+        index.remove_path(Path::new("test.txt")).unwrap();
+        index.add_path(Path::new("renamed.txt")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = git_repo.find_tree(tree_id).unwrap();
+        let parent = git_repo
+            .find_commit(git2::Oid::from_str(&first_oid).unwrap())
+            .unwrap();
+        git_repo
+            .commit(
+                Some("HEAD"),
+                &sig,
+                &sig,
+                "Rename test.txt to renamed.txt",
+                &tree,
+                &[&parent],
+            )
+            .unwrap();
+
+        let second_oid = git_repo.head().unwrap().target().unwrap().to_string();
+        let files = repo.commit_files(&second_oid).unwrap();
+        assert_eq!(
+            files.len(),
+            1,
+            "rename must collapse to one entry, not delete+add: {files:?}"
+        );
+        assert_eq!(files[0].path, "renamed.txt");
+        assert_eq!(files[0].status, "renamed");
+    }
+
+    #[test]
+    fn test_diff_commits_rename_is_r_not_delete_add() {
+        let (dir, repo) = create_repo_with_file();
+        let first_oid = repo.inner().head().unwrap().target().unwrap().to_string();
+
+        fs::rename(dir.path().join("test.txt"), dir.path().join("renamed.txt")).unwrap();
+        let git_repo = repo.inner();
+        let sig = git2::Signature::now("Test", "test@test.com").unwrap();
+        let mut index = git_repo.index().unwrap();
+        index.remove_path(Path::new("test.txt")).unwrap();
+        index.add_path(Path::new("renamed.txt")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = git_repo.find_tree(tree_id).unwrap();
+        let parent = git_repo
+            .find_commit(git2::Oid::from_str(&first_oid).unwrap())
+            .unwrap();
+        git_repo
+            .commit(Some("HEAD"), &sig, &sig, "Rename", &tree, &[&parent])
+            .unwrap();
+        let second_oid = git_repo.head().unwrap().target().unwrap().to_string();
+
+        let files = repo.diff_commits(&first_oid, &second_oid).unwrap();
+        assert_eq!(files.len(), 1, "diff between commits must collapse rename: {files:?}");
+        assert_eq!(files[0].path, "renamed.txt");
+        assert_eq!(files[0].status, "renamed");
+    }
+
+    #[test]
+    fn test_diff_stats_index_rename_is_r_not_delete_add() {
+        let (dir, repo) = create_repo_with_file();
+        fs::rename(dir.path().join("test.txt"), dir.path().join("renamed.txt")).unwrap();
+        repo.stage_all().unwrap();
+
+        let stats = repo.diff_stats_index().unwrap();
+        let renamed = stats
+            .iter()
+            .find(|s| s.path == "renamed.txt")
+            .expect("renamed path must appear in staged stats");
+        assert_eq!(renamed.status, "renamed");
+        assert_eq!(renamed.old_path.as_deref(), Some("test.txt"));
+        assert!(
+            !stats.iter().any(|s| s.path == "test.txt" && s.status == "deleted"),
+            "old path must not appear as a separate deleted entry: {stats:?}"
+        );
     }
 
     #[test]
