@@ -27,6 +27,8 @@
     type ChangesTreeNode,
   } from "./changes-tree";
   import { changesTreeView } from "$lib/stores/changesView";
+  import { activeProject } from "$lib/stores/projects";
+  import { copyPathMenuItems } from "$lib/utils/copy-path-menu";
   import { get } from "svelte/store";
   import { remembered, scoped } from "$lib/stores/viewMemory";
   import {
@@ -493,10 +495,9 @@
       });
     }
 
-    items.push({
-      label: m.changes_menu_copy_path(),
-      action: () => navigator.clipboard.writeText(filePath),
-    });
+    items.push({ separator: true });
+    items.push(...copyPathMenuItems(filePath, get(activeProject)?.path ?? null));
+    items.push({ separator: true });
 
     items.push({
       label: m.context_reveal_in_file_manager(),
@@ -681,10 +682,8 @@
           addToast({ type: "error", message: getErrorMessage(err) }),
         ),
     });
-    items.push({
-      label: m.changes_menu_copy_path(),
-      action: () => navigator.clipboard.writeText(`${dirPath}/`),
-    });
+    items.push({ separator: true });
+    items.push(...copyPathMenuItems(dirPath, get(activeProject)?.path ?? null));
     return items;
   }
 </script>

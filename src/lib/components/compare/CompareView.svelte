@@ -20,7 +20,12 @@
   import { IconButton, Button, Skeleton } from "$lib/components/ui";
   import EmptyState from "../common/EmptyState.svelte";
   import FileChangeList from "../common/FileChangeList.svelte";
+  import ContextMenu from "../common/ContextMenu.svelte";
+  import type { MenuItem } from "../common/ContextMenu.svelte";
   import { scoped } from "$lib/stores/viewMemory";
+  import { activeProject } from "$lib/stores/projects";
+  import { copyPathMenuItems } from "$lib/utils/copy-path-menu";
+  import { get } from "svelte/store";
   import DiffEditor from "../editor/DiffEditor.svelte";
   import ResizableDiffPanel from "../editor/ResizableDiffPanel.svelte";
   import RefPicker, { type RefOption } from "./RefPicker.svelte";
@@ -71,6 +76,23 @@
 
   let bothRefsSet = $derived(!!$compareRefA && !!$compareRefB);
   let aheadLabel = $derived(`${$compareCommits.length}${$compareCommitsCapped ? "+" : ""}`);
+
+  let ctxFile = $state<string | null>(null);
+  let ctxX = $state(0);
+  let ctxY = $state(0);
+  let ctxVisible = $state(false);
+
+  function openFileContextMenu(e: MouseEvent, path: string) {
+    e.preventDefault();
+    ctxFile = path;
+    ctxX = e.clientX;
+    ctxY = e.clientY;
+    ctxVisible = true;
+  }
+
+  function buildFileContextItems(path: string): MenuItem[] {
+    return copyPathMenuItems(path, get(activeProject)?.path ?? null);
+  }
 </script>
 
 <div class="compare-view">
@@ -187,6 +209,7 @@
           <FileChangeList
             files={$compareFiles}
             onSelect={(p) => openCompareFileDiff(p)}
+            onContextMenu={openFileContextMenu}
             memoryKey={scoped("compare.files")}
             treeToggle
           />
@@ -403,3 +426,11 @@
     color: var(--text-primary);
   }
 </style>
+
+<ContextMenu
+  items={ctxFile ? buildFileContextItems(ctxFile) : []}
+  x={ctxX}
+  y={ctxY}
+  visible={ctxVisible}
+  onClose={() => (ctxVisible = false)}
+/>

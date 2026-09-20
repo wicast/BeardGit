@@ -23,7 +23,10 @@
   import { openBlame, blameActiveTab } from "$lib/stores/blame";
   import { activeViewStore } from "$lib/stores/navigation";
   import { openTab as openEditorTab } from "$lib/stores/fileEditor";
+  import { activeProject } from "$lib/stores/projects";
+  import { copyPathMenuItems } from "$lib/utils/copy-path-menu";
   import { formatDateTime } from "../../utils/time";
+  import { get } from "svelte/store";
 
   let {
     commit,
@@ -147,6 +150,8 @@
         },
       });
     }
+    items.push({ separator: true });
+    items.push(...copyPathMenuItems(path, get(activeProject)?.path ?? null));
     return items;
   }
 

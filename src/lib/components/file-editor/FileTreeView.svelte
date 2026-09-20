@@ -24,9 +24,13 @@
   import { IconButton, SearchInput } from "$lib/components/ui";
   import ContextMenu from "$lib/components/common/ContextMenu.svelte";
   import { revealInFileManager } from "$lib/api/tauri";
+  import { getErrorMessage } from "$lib/api/errors";
   import type { MenuItem } from "$lib/components/common/ContextMenu.svelte";
   import type { WorkdirTreeEntry } from "$lib/types";
   import * as m from "$lib/paraglide/messages";
+  import { activeProject } from "$lib/stores/projects";
+  import { copyPathMenuItems } from "$lib/utils/copy-path-menu";
+  import { get } from "svelte/store";
   import { fileGlyphFor } from "./file-icons";
   import WorkdirTree from "./WorkdirTree.svelte";
   import { horizontalWheel } from "$lib/actions/horizontalWheel";
@@ -176,16 +180,13 @@
       label: m.context_reveal_in_file_manager(),
       action: () =>
         void revealInFileManager(entry.path).catch((err) =>
-          addToast({ type: "error", message: String(err) }),
+          addToast({ type: "error", message: getErrorMessage(err) }),
         ),
     });
-    items.push({
-      label: m.editor_copy_path(),
-      action: () => {
-        void navigator.clipboard.writeText(entry.path);
-        addToast({ message: m.editor_copy_path_done(), type: "info" });
-      },
-    });
+    items.push({ separator: true });
+    items.push(
+      ...copyPathMenuItems(entry.path, get(activeProject)?.path ?? null),
+    );
     return items;
   }
 

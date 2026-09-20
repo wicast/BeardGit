@@ -2,7 +2,12 @@
   import * as m from "$lib/paraglide/messages";
   import { Button, Skeleton } from "$lib/components/ui";
   import FileChangeList from "../common/FileChangeList.svelte";
+  import ContextMenu from "../common/ContextMenu.svelte";
+  import type { MenuItem } from "../common/ContextMenu.svelte";
   import { scoped } from "$lib/stores/viewMemory";
+  import { activeProject } from "$lib/stores/projects";
+  import { copyPathMenuItems } from "$lib/utils/copy-path-menu";
+  import { get } from "svelte/store";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
   import EmptyState from "../common/EmptyState.svelte";
   import DiffEditor from "../editor/DiffEditor.svelte";
@@ -82,6 +87,23 @@
   function handleNavigateToGraph(oid: string) {
     void navigateToCommit(oid);
     activeViewStore.set("graph");
+  }
+
+  let ctxFile = $state<string | null>(null);
+  let ctxX = $state(0);
+  let ctxY = $state(0);
+  let ctxVisible = $state(false);
+
+  function openFileContextMenu(e: MouseEvent, path: string) {
+    e.preventDefault();
+    ctxFile = path;
+    ctxX = e.clientX;
+    ctxY = e.clientY;
+    ctxVisible = true;
+  }
+
+  function buildFileContextItems(path: string): MenuItem[] {
+    return copyPathMenuItems(path, get(activeProject)?.path ?? null);
   }
 </script>
 
@@ -178,6 +200,7 @@
               <FileChangeList
                 files={$selectedCommitFiles}
                 onSelect={handleFileClick}
+                onContextMenu={openFileContextMenu}
                 memoryKey={scoped(`tags.files.${$selectedTagName}`)}
                 treeToggle
               />
@@ -532,3 +555,11 @@
   }
 
 </style>
+
+<ContextMenu
+  items={ctxFile ? buildFileContextItems(ctxFile) : []}
+  x={ctxX}
+  y={ctxY}
+  visible={ctxVisible}
+  onClose={() => (ctxVisible = false)}
+/>
