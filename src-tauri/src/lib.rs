@@ -358,6 +358,7 @@ pub fn run() {
             app_core::commands::clear_recent_repos,
             app_core::commands::get_remotes,
             app_core::commands::fetch_remote,
+            app_core::commands::fetch_branch,
             app_core::commands::pull_remote,
             app_core::commands::push_remote,
             app_core::commands::delete_remote_branch,

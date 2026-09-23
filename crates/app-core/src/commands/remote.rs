@@ -41,6 +41,39 @@ pub async fn fetch_remote(
     Ok(id)
 }
 
+/// Fetch a single branch from a remote as a background task.
+///
+/// Spawns `git fetch <remote> <branch>` via the task manager and returns
+/// immediately with the task ID. Only that branch's remote-tracking ref is
+/// updated, so a branch the user is *not* on can be refreshed without
+/// touching HEAD or the working tree — the counterpart of [`pull_remote`],
+/// which always merges into the checked-out branch.
+#[tauri::command]
+#[instrument(skip(state, task_manager), name = "cmd::remote::fetch_branch")]
+pub async fn fetch_branch(
+    remote: String,
+    branch: String,
+    state: State<'_, AppState>,
+    task_manager: State<'_, Arc<TaskManager>>,
+) -> Result<TaskId, IpcError> {
+    let cwd = get_active_project_path(&state)?;
+
+    let label = format!("Fetch {}/{}", remote, branch);
+    let id = task_manager
+        .spawn_with_options(SpawnOptions {
+            label,
+            command: "git",
+            args: &["fetch", &remote, &branch],
+            cwd: &cwd,
+            cancellable: true,
+            kind: TaskKind::GitFetch,
+            stdin: None,
+        })
+        .await;
+
+    Ok(id)
+}
+
 /// Pull a branch from a remote (merge strategy) as a background task.
 ///
 /// Spawns `git pull <remote> <branch>` via the task manager.

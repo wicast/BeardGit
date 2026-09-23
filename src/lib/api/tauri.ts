@@ -443,6 +443,17 @@ export async function fetchRemote(remote: string): Promise<number> {
   return invoke<number>("fetch_remote", { remote });
 }
 
+/**
+ * Fetch one branch from a remote: `git fetch <remote> <branch>`.
+ *
+ * Updates just that remote-tracking ref, so a branch that isn't checked out
+ * can be refreshed (and its ahead/behind pips made honest) without merging
+ * anything into HEAD. Returns the spawned task id.
+ */
+export async function fetchBranch(remote: string, branch: string): Promise<number> {
+  return invoke<number>("fetch_branch", { remote, branch });
+}
+
 export async function pullRemote(remote: string, branch: string): Promise<number> {
   return invoke<number>("pull_remote", { remote, branch });
 }

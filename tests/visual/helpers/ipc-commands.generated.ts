@@ -119,6 +119,7 @@ export type IpcCommandName =
   | "edit_mr_pr"
   | "edit_release"
   | "ensure_commit_local"
+  | "fetch_branch"
   | "fetch_remote"
   | "file_history"
   | "get_active_project_index"

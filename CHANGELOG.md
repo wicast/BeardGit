@@ -4,6 +4,10 @@ All notable changes to BeardGit are documented here. Format follows [keepachange
 
 ## [Unreleased]
 
+### Added
+
+- **Fetch a branch you are not on.** A non-current local branch in the Branches list now offers "Fetch from <remote>" in its context menu, and remote-tracking rows offer it beside "Pull into current branch". Pull used to be the only network refresh, and it is deliberately gated on the checked-out branch because `git pull` merges into HEAD — so any other branch could only be brought up to date by checking it out first, which left its ahead/behind pips reading as stale as the last fetch. The new entry spawns `git fetch <remote> <branch>` as a cancellable task: only that branch's remote-tracking ref moves, HEAD and the working tree stay as they were, and the list refreshes through the usual watcher fan-out. With several remotes configured the item becomes a submenu, like Push and Pull.
+
 ### Fixed
 
 - **"Reveal in file manager" now opens the file's folder on Windows instead of a bare Explorer window.** The context-menu entry in the Changes list, the commit detail file list, and the editor file tree all pass git's repo-relative paths (forward slashes), which the command joined onto the project root. `PathBuf::join` on Windows only inserts its own separator between the two halves and leaves the rest untouched, so Explorer was handed `/select,C:\repo\src/lib.rs` — a mixed-separator path it cannot resolve for `/select,`. Explorer silently falls back to its default view (Quick access / This PC), which is exactly the "opens Explorer but not the file's location" symptom. The path is now normalised to backslashes before it reaches Explorer. Opening a folder — including the project-folder button in the top-right — was unaffected, because Explorer accepts any separator for plain navigation; macOS (`open -R`) and Linux (`xdg-open`) were unaffected too.

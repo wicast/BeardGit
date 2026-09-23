@@ -29,7 +29,13 @@
   import { remotes, refreshRemotes } from "../../stores/remotes";
   import { openCreateBranchDialog } from "../../stores/createBranchDialog";
   import { openCompare } from "../../stores/compare";
-  import { rebaseBranch, pullRemote, pushRemote, deleteRemoteBranch } from "../../api/tauri";
+  import {
+    fetchBranch,
+    rebaseBranch,
+    pullRemote,
+    pushRemote,
+    deleteRemoteBranch,
+  } from "../../api/tauri";
   import { runMutation } from "../../api/runMutation";
   import { remembered, scoped } from "../../stores/viewMemory";
   import type { BranchInfo } from "../../types";
@@ -180,6 +186,28 @@
   }
 
   /**
+   * Fetch `remote`'s tip for `branch` — `git fetch <remote> <branch>`
+   * updates just that remote-tracking ref, leaving HEAD and the working
+   * tree alone. This is the non-checked-out counterpart of {@link doPull}:
+   * a pull always merges into HEAD, so a branch you are not on can only be
+   * refreshed. Spawned as a background task; the watcher sees the moved
+   * tracking ref and refreshes the list through the usual fan-out.
+   */
+  async function doFetch(remote: string, branch: string) {
+    try {
+      await runMutation({
+        kind: "fetch",
+        invoke: () => fetchBranch(remote, branch),
+        successToast: () => `Fetched ${remote}/${branch}`,
+        failureToastPrefix: "Fetch failed",
+        trackAsTask: true,
+      });
+    } catch {
+      // runMutation already surfaced the toast.
+    }
+  }
+
+  /**
    * Push `branch` to `remote`. When `force` is true the operation is
    * guarded by `--force-with-lease` on the Rust side.
    */
@@ -259,6 +287,26 @@
   }
 
   /**
+   * Build the "Fetch" context-menu item for a local branch that is *not*
+   * checked out — the read-only half of {@link pullMenuItem}. Single remote
+   * → fires directly. Multiple remotes → submenu, mirroring Push/Pull.
+   */
+  function fetchMenuItem(): MenuItem {
+    const rs = $remotes;
+    if (rs.length === 1) {
+      const r = rs[0].name;
+      return { label: `Fetch from ${r}`, action: () => doFetch(r, contextBranch) };
+    }
+    return {
+      label: "Fetch",
+      children: rs.map((r) => ({
+        label: r.name,
+        action: () => doFetch(r.name, contextBranch),
+      })),
+    };
+  }
+
+  /**
    * Build the "Push (force-with-lease)" context-menu item.
    * Always a submenu so force-push never happens on a single click.
    * Marked danger (red) so it is visually distinct from plain Push.
@@ -292,6 +340,12 @@
       items.push({ label: "Rename", action: () => openRenameDialog(contextBranch) });
     }
     if (parsedRemote) {
+      items.push({
+        // Refresh `refs/remotes/<remote>/<branch>` on its own — no merge,
+        // so the row's OID updates without touching HEAD.
+        label: `Fetch from ${parsedRemote.remote}`,
+        action: () => doFetch(parsedRemote.remote, parsedRemote.branch),
+      });
       items.push({
         // `git pull <remote> <branch>` fetches the remote tip first, so
         // this is the fresh-ref counterpart of "Merge into current".
@@ -339,8 +393,13 @@
     }
     if (!contextIsRemote && $remotes.length > 0) {
       items.push({ separator: true });
+      // HEAD gets Pull (fetch + merge into the checked-out branch); any
+      // other local branch gets Fetch, since a pull from here would land
+      // its changes on HEAD instead.
       if (contextIsHead) {
         items.push(pullMenuItem());
+      } else {
+        items.push(fetchMenuItem());
       }
       items.push(pushMenuItem());
       items.push(forcePushMenuItem());
