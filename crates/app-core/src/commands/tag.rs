@@ -189,6 +189,45 @@ pub async fn push_tag(
     }
 }
 
+/// Fetch every tag (and its objects) from the named remote as a background
+/// task — the counterpart of [`push_tag`]'s `--tags` branch.
+///
+/// `git fetch --tags` downloads all tags the remote advertises, so the local
+/// tag list grows without touching HEAD or the working tree. The spawned
+/// command writes `refs/tags/**` (or `packed-refs`), so the repository
+/// watcher picks up `refs_changed` and refreshes the tags view and graph
+/// through the usual mutation dispatcher.
+#[tauri::command]
+#[instrument(skip(state, task_manager), name = "cmd::tag::pull_all")]
+pub async fn pull_all_tags(
+    remote: String,
+    state: State<'_, AppState>,
+    task_manager: State<'_, Arc<TaskManager>>,
+) -> Result<TaskId, IpcError> {
+    let cwd = get_active_project_path(&state)?;
+    let remote = if remote.is_empty() {
+        "origin".to_string()
+    } else {
+        remote
+    };
+
+    // The remote is validated on the frontend against the repo's remotes, so
+    // no `--` terminator is needed here (same convention as `fetch_remote`).
+    let id = task_manager
+        .spawn_with_options(SpawnOptions {
+            label: format!("Pull tags from {remote}"),
+            command: "git",
+            args: &["fetch", &remote, "--tags"],
+            cwd: &cwd,
+            cancellable: true,
+            kind: TaskKind::GitFetch,
+            stdin: None,
+        })
+        .await;
+
+    Ok(id)
+}
+
 #[cfg(test)]
 mod tests {
     use git_engine::Repository;

@@ -1,6 +1,7 @@
 /**
  * Tags store — paginated tag listing, search, selection with detail loading,
- * and CRUD mutations (create/delete/push).
+ * and CRUD mutations (create/delete/push, plus fetching every tag from a
+ * remote).
  *
  * Tags are loaded in pages of 30. Client-side filtering is attempted first;
  * if no results match, a backend search via `git tag -l` is used as fallback.
@@ -19,6 +20,7 @@ import {
   createTag as apiCreateTag,
   deleteTag as apiDeleteTag,
   pushTag as apiPushTag,
+  pullAllTags as apiPullAllTags,
 } from "../api/tauri";
 import { runMutation } from "../api/runMutation";
 import { createFetchGuard, fetchPageIntoStore } from "../utils/store-helpers";
@@ -237,6 +239,22 @@ export async function doPushTag(tagName: string | null, remote: string) {
     failureToastPrefix: tagName
       ? `Push tag ${tagName} failed`
       : "Push tags failed",
+  });
+}
+
+/**
+ * Fetch every tag from `remote` (`git fetch <remote> --tags`).
+ *
+ * Mirrors `doPushTag`: no success toast, because the fetch runs as a
+ * `GitFetch` task and the drawer row reaching a terminal state is the
+ * confirmation. The tag list and graph refresh through the repository
+ * watcher's `refs_changed` event — the same path the toolbar's Fetch uses.
+ */
+export async function doPullAllTags(remote: string) {
+  return runMutation({
+    kind: "tag_fetch",
+    invoke: () => apiPullAllTags(remote),
+    failureToastPrefix: "Pull tags failed",
   });
 }
 

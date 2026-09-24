@@ -220,6 +220,7 @@ export type IpcCommandName =
   | "preview_patch"
   | "probe_forge_cli_status"
   | "publish_release"
+  | "pull_all_tags"
   | "pull_remote"
   | "push_remote"
   | "push_tag"

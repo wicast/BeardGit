@@ -1,5 +1,5 @@
 /**
- * Wiring tests for the Tags panel's new push surfaces.
+ * Wiring tests for the Tags panel's push and pull surfaces.
  *
  * Before this, both push entry points were hardcoded to `origin`. These
  * cover the two ways that changed:
@@ -9,6 +9,9 @@
  *   - the row hover button and the "Push all tags" footer, which push to the
  *     single remote shared with the tag detail footer
  *     (`stores/tagPushRemote`) and are disabled when there is none.
+ *
+ * The footer's "Pull All Tags" button reads that same store — one remote for
+ * both directions — so its tests live beside the push ones.
  *
  * The menu's copy/delete entries are covered here too, since they share the
  * item list and a regression in the ordering would take the push item with
@@ -61,6 +64,7 @@ vi.mock("../../../stores/tags", () => ({
   restorePreFilterTags: vi.fn(),
   doDeleteTag: vi.fn(),
   doPushTag: vi.fn().mockResolvedValue(1),
+  doPullAllTags: vi.fn().mockResolvedValue(1),
 }));
 
 vi.mock("../../../stores/remotes", () => ({
@@ -75,6 +79,7 @@ import * as remotesStore from "../../../stores/remotes";
 import * as graphStore from "../../../stores/graph";
 import * as navigationStore from "../../../stores/navigation";
 import { __resetViewMemory } from "../../../stores/viewMemory";
+import { __resetTagPushRemoteForTests } from "../../../stores/tagPushRemote";
 
 const TAG = {
   name: "v1.2.3",
@@ -87,9 +92,21 @@ const TAG = {
   date: "2026-06-10T10:00:00Z",
 };
 
-/** Seed the row list. `filteredTags` is derived in the real store module. */
+/**
+ * Seed the row list. `filteredTags` is derived in the real store module.
+ *
+ * `tags` is seeded too: it is the unfiltered list the footer reads to decide
+ * whether "Push All Tags" has anything to send, and a mock that left it
+ * empty would disable that button in every test here.
+ */
 function seedTags(items: (typeof TAG)[]): void {
+  tagsStore.tags.set(items);
   (tagsStore.filteredTags as unknown as Writable<(typeof TAG)[]>).set(items);
+}
+
+/** Hide every row without emptying the repository — a filter with no match. */
+function seedEmptyFilterView(): void {
+  (tagsStore.filteredTags as unknown as Writable<(typeof TAG)[]>).set([]);
 }
 
 function setRemotes(...names: string[]): void {
@@ -119,6 +136,10 @@ function menuLabels(menu: HTMLElement): (string | null)[] {
 beforeEach(() => {
   vi.clearAllMocks();
   __resetViewMemory();
+  // `tagPushRemote` is a module-level `remembered` cell, so clearing the view
+  // memory registry does not put it back: the picker test below leaves it on
+  // `upstream`, and every later test in this file would then push there.
+  __resetTagPushRemoteForTests();
   seedTags([TAG]);
   setRemotes("origin", "upstream");
   Object.defineProperty(navigator, "clipboard", {
@@ -270,5 +291,54 @@ describe("TagList push controls", () => {
     expect(queryByTestId("tag-push-all-remote")).toBeNull();
     const pushAll = getByText("Push All Tags").closest("button") as HTMLButtonElement;
     expect(pushAll.disabled).toBe(true);
+  });
+
+  it("stays on screen with no tags to push, and says so", () => {
+    seedTags([]);
+    const { getByTestId, getByText } = render(TagList);
+
+    const pushAll = getByText("Push All Tags").closest("button") as HTMLButtonElement;
+    expect(pushAll.disabled).toBe(true);
+    expect(pushAll.title).toBe("No tags to push");
+    // The remote picker and the pull half of the pair act on the remote, so
+    // they keep working: an empty tag list is when pulling is useful.
+    expect(getByTestId("tag-push-all-remote")).toBeTruthy();
+    const pullAll = getByTestId("tag-pull-all") as HTMLButtonElement;
+    expect(pullAll.disabled).toBe(false);
+  });
+
+  it("keeps push available when the filter hides every row", async () => {
+    seedEmptyFilterView();
+    const { getByTestId, getByText } = render(TagList);
+
+    const pushAll = getByText("Push All Tags").closest("button") as HTMLButtonElement;
+    expect(pushAll.disabled).toBe(false);
+
+    await fireEvent.click(getByTestId("tag-push-all"));
+    expect(tagsStore.doPushTag).toHaveBeenCalledWith(null, "origin");
+  });
+});
+
+describe("TagList pull controls", () => {
+  it("pulls all tags from the shared default remote", async () => {
+    const { getByTestId } = render(TagList);
+    await fireEvent.click(getByTestId("tag-pull-all"));
+    expect(tagsStore.doPullAllTags).toHaveBeenCalledWith("origin");
+  });
+
+  it("follows the same remote selection as push", async () => {
+    const { getByTestId } = render(TagList);
+    const picker = getByTestId("tag-push-all-remote") as HTMLSelectElement;
+    await fireEvent.change(picker, { target: { value: "upstream" } });
+
+    await fireEvent.click(getByTestId("tag-pull-all"));
+    expect(tagsStore.doPullAllTags).toHaveBeenCalledWith("upstream");
+  });
+
+  it("disables pull when there are no remotes", () => {
+    setRemotes();
+    const { getByTestId } = render(TagList);
+    const pullAll = getByTestId("tag-pull-all") as HTMLButtonElement;
+    expect(pullAll.disabled).toBe(true);
   });
 });

@@ -14,6 +14,7 @@
     restorePreFilterTags,
     doDeleteTag,
     doPushTag,
+    doPullAllTags,
   } from "../../stores/tags";
   import { remotes } from "../../stores/remotes";
   import { tagPushRemote } from "../../stores/tagPushRemote";
@@ -106,6 +107,22 @@
     }
   }
 
+  /**
+   * Fetch every tag from `remote`. Shares `stores/tagPushRemote` with the
+   * push button beside it, so both halves of "sync my tags" target the same
+   * remote; the remote picker in the footer governs the pair.
+   *
+   * No success toast, for the same reason as the push: it runs as a
+   * `GitFetch` task whose drawer row is the confirmation.
+   */
+  async function pullAllTags(remote: string) {
+    try {
+      await doPullAllTags(remote);
+    } catch {
+      // runMutation already surfaced the failure toast.
+    }
+  }
+
   function handleContextMenu(e: MouseEvent, tag: TagInfo) {
     contextTag = tag;
     menuX = e.clientX;
@@ -141,6 +158,13 @@
     // selection changes behind a Tags view that never visibly moves.
     activeViewStore.set("graph");
   }
+
+  /**
+   * Whether the repository has any tags at all. Reads `$tags`, the
+   * unfiltered list, so this stays true while the filter hides every row —
+   * "push all tags" is a statement about the repository, not the view.
+   */
+  let hasTags = $derived($tags.length > 0);
 
   let menuItems = $derived.by((): MenuItem[] => {
     const tag = contextTag;
@@ -183,6 +207,7 @@
   onSelect={handleSelect}
   onContextMenu={handleContextMenu}
   memoryKey={scoped("tags.list")}
+  footerWhenEmpty
 >
   {#snippet headerActions()}
     <Button variant="primary" size="sm" onclick={() => (showCreateDialog = true)}>
@@ -268,15 +293,40 @@
         </Button>
       {/if}
 
-      <div class="push-all">
+      <div class="remote-actions">
+        <!-- Pull sits left of push: the pair is one "sync tags with this
+             remote" control, and the picker after them governs both. -->
+        <!-- Both halves are coloured on purpose: `neutral`'s fill is
+             `--bg-secondary`, which is this panel's own surface, so a
+             neutral button here renders as bare text with no button around
+             it. Pull takes `success` rather than a second `primary` so the
+             two directions stay tellable apart at a glance. -->
         <Button
-          variant="primary"
+          variant="success"
           size="sm"
+          testid="tag-pull-all"
           disabled={$tagPushRemote === null}
           description={$tagPushRemote === null
             ? m.tags_push_no_remote()
-            : m.tags_push_to_remote({ remote: $tagPushRemote })}
-          onclick={() => { if ($tagPushRemote) pushTag(null, $tagPushRemote); }}
+            : m.tags_pull_from_remote({ remote: $tagPushRemote })}
+          onclick={() => { if ($tagPushRemote) pullAllTags($tagPushRemote); }}
+        >
+          {m.tags_pull_all_button()}
+        </Button>
+        <!-- Disabled with no tags: `git push --tags` has nothing to send, so
+             the button stays visible (both controls belong to the footer
+             whether or not rows exist) but says why it cannot act. -->
+        <Button
+          variant="primary"
+          size="sm"
+          testid="tag-push-all"
+          disabled={$tagPushRemote === null || !hasTags}
+          description={$tagPushRemote === null
+            ? m.tags_push_no_remote()
+            : !hasTags
+              ? m.tags_push_no_tags()
+              : m.tags_push_to_remote({ remote: $tagPushRemote })}
+          onclick={() => { if ($tagPushRemote && hasTags) pushTag(null, $tagPushRemote); }}
         >
           {m.tags_push_all_button()}
         </Button>
@@ -399,9 +449,9 @@
   .tags-footer {
     display: flex;
     justify-content: center;
-    /* Wraps rather than squeezing: the footer is two controls per row now
-       (push-all + its remote picker, plus "load more"), and a narrow list
-       pane would otherwise clip the picker. */
+    /* Wraps rather than squeezing: the footer is three controls per row now
+       (pull + push + their shared remote picker, plus "load more"), and a
+       narrow list pane would otherwise clip the picker. */
     flex-wrap: wrap;
     align-items: center;
     gap: 8px;
@@ -409,8 +459,8 @@
     border-top: 1px solid var(--border);
   }
 
-  /* The button and its remote picker are one control group. */
-  .push-all {
+  /* Pull, push and their shared remote picker are one control group. */
+  .remote-actions {
     display: inline-flex;
     align-items: center;
     gap: 4px;

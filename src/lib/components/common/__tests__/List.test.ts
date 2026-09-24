@@ -1,7 +1,8 @@
 /**
  * Unit tests for `List.svelte` — covers the new `refreshing` prop and
  * confirms the existing behaviours (loading spinner on empty, loading bar
- * when items + loading) still hold.
+ * when items + loading) still hold. Also covers `footerWhenEmpty`, the
+ * opt-in TagList uses to keep its pull/push controls on screen with no rows.
  */
 
 import { describe, expect, it, afterEach } from "vitest";
@@ -46,6 +47,10 @@ const baseProps: {
   row: rowSnippet,
 };
 
+const footerSnippet = createRawSnippet<[]>(() => ({
+  render: () => `<span data-testid="footer">footer</span>`,
+}));
+
 describe("List.refreshing", () => {
   it("renders the loading bar when refreshing=true and items exist", () => {
     const { getByTestId } = render(List, {
@@ -74,5 +79,41 @@ describe("List.refreshing", () => {
     });
     expect(container.querySelector('[data-testid="skeleton"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="list-loading-bar"]')).toBeNull();
+  });
+});
+
+describe("List.footerWhenEmpty", () => {
+  it("renders the footer beside the rows", () => {
+    const { getByTestId } = render(List, {
+      props: { ...baseProps, footer: footerSnippet },
+    });
+    expect(getByTestId("footer")).toBeTruthy();
+  });
+
+  it("hides the footer when the list is empty and the opt-in is off", () => {
+    const { queryByTestId } = render(List, {
+      props: { ...baseProps, items: [], footer: footerSnippet },
+    });
+    expect(queryByTestId("footer")).toBeNull();
+  });
+
+  it("renders the footer under the empty state when footerWhenEmpty is set", () => {
+    const { getByTestId } = render(List, {
+      props: { ...baseProps, items: [], footer: footerSnippet, footerWhenEmpty: true },
+    });
+    expect(getByTestId("footer")).toBeTruthy();
+  });
+
+  it("stays hidden while the first page is still loading", () => {
+    const { queryByTestId } = render(List, {
+      props: {
+        ...baseProps,
+        items: [],
+        loading: true,
+        footer: footerSnippet,
+        footerWhenEmpty: true,
+      },
+    });
+    expect(queryByTestId("footer")).toBeNull();
   });
 });

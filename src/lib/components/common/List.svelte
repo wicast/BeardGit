@@ -54,6 +54,14 @@
     afterHeader?: Snippet;
     /** Optional footer rendered after all items inside the scroll container. */
     footer?: Snippet;
+    /**
+     * Render `footer` even when there is nothing to list. Default `false`:
+     * a footer that exists to page through rows ("Load more") is meaningless
+     * with no rows. TagList's pull/push controls act on the remote rather
+     * than on the rows in view, so they opt in — an empty tag list is
+     * exactly when "pull tags down" is the useful action.
+     */
+    footerWhenEmpty?: boolean;
     /** When provided, replaces the entire items area. Loading/empty/each are skipped. */
     customContent?: Snippet;
     /**
@@ -101,6 +109,7 @@
     emptyState,
     afterHeader,
     footer,
+    footerWhenEmpty = false,
     customContent,
     rowHeight,
     virtualizeOver = 500,
@@ -310,6 +319,9 @@
         {@render emptyState()}
       {:else}
         <div class="list-empty">{emptyMessage}</div>
+      {/if}
+      {#if footer && footerWhenEmpty}
+        {@render footer()}
       {/if}
     {:else if isVirtualized && rowHeight !== undefined}
       <!-- Virtualized window: a tall sizer keeps the scrollbar honest,

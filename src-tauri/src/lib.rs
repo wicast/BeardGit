@@ -369,6 +369,7 @@ pub fn run() {
             app_core::commands::create_tag,
             app_core::commands::delete_tag,
             app_core::commands::push_tag,
+            app_core::commands::pull_all_tags,
             app_core::commands::get_commit_stats,
             app_core::commands::list_tags_paginated,
             app_core::commands::search_tags,

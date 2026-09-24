@@ -397,6 +397,16 @@ export async function pushTag(tagName: string | null, remote: string): Promise<n
   return invoke<number>("push_tag", { tagName, remote });
 }
 
+/**
+ * Fetch every tag from `remote` as a background task (`git fetch <remote> --tags`).
+ *
+ * Returns the spawned task id; the task drawer shows its lifecycle and the
+ * tags view refreshes through the repository watcher's `refs_changed` event.
+ */
+export async function pullAllTags(remote: string): Promise<number> {
+  return invoke<number>("pull_all_tags", { remote });
+}
+
 export async function getCommitStats(oid: string): Promise<CommitStats> {
   return invoke<CommitStats>("get_commit_stats", { oid });
 }
