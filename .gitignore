@@ -42,6 +42,10 @@ src-tauri/icons/ios/
 # Paraglide generated output
 src/lib/paraglide/
 
+# Scratch space for running the quality bar under a file sandbox: Node shims
+# plus transient logs (see .sandbox/README.md). All regenerable.
+.sandbox/
+
 # Bundled CLI binaries (downloaded by scripts/download-cli-binaries.js)
 src-tauri/binaries/
 
