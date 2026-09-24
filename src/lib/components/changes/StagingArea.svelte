@@ -18,6 +18,7 @@
   import { changesTreeView, setChangesTreeView, loadChangesViewPref } from "$lib/stores/changesView";
   import { addToast } from "$lib/stores/toast";
   import { repoInfo } from "$lib/stores/repo";
+  import { whenRepoSwitchSettled } from "$lib/stores/repoSwitchReadiness";
   import { activeProject } from "$lib/stores/projects";
   import { taskOutput } from "$lib/stores/taskPanel";
   import { setTaskSubtitle } from "$lib/stores/tasks";
@@ -78,6 +79,9 @@
   // different view, so the Changes view re-reads it when the user returns.
   let signingStatus = $state<SigningStatus | null>(null);
   async function refreshSigningStatus() {
+    // Active-repo IPC: wait out any in-flight backend project switch so a
+    // mid-switch remount doesn't read the outgoing repo's signing config.
+    await whenRepoSwitchSettled();
     try {
       signingStatus = await getSigningConfig();
     } catch {

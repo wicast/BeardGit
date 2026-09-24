@@ -22,6 +22,7 @@ import {
 } from "../api/tauri";
 import { runMutation } from "../api/runMutation";
 import { createFetchGuard, fetchPageIntoStore } from "../utils/store-helpers";
+import { whenRepoSwitchSettled } from "./repoSwitchReadiness";
 
 // ---------------------------------------------------------------------------
 // List state
@@ -76,6 +77,10 @@ export const filteredTags = derived(
 // ---------------------------------------------------------------------------
 
 export async function refreshTags() {
+  // See worktrees.ts: never issue active-repo IPC while a backend
+  // `switch_project` is still in flight. Loading first — no empty flash.
+  tagsLoading.set(true);
+  await whenRepoSwitchSettled();
   currentPage = 1;
   await fetchPageIntoStore(
     tags,
@@ -100,6 +105,7 @@ export async function refreshTags() {
 }
 
 export async function loadMoreTags() {
+  await whenRepoSwitchSettled();
   currentPage++;
   await fetchPageIntoStore(
     tags,

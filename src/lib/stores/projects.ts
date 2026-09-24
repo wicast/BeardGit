@@ -46,6 +46,7 @@ import { refreshUserEmails, clearGraphState, resetGraphViewScope, graphViewOptio
 import * as m from "$lib/paraglide/messages";
 import { branches, clearBranchState } from "./branches";
 import { createRepoState, dropRepoState, setActiveRepoPath } from "./repo-state";
+import { trackRepoSwitch } from "./repoSwitchReadiness";
 import { clearTagState } from "./tags";
 import { clearStashState } from "./stashes";
 import { clearBlameState } from "./blame";
@@ -428,7 +429,13 @@ async function activateProjectTab(tabIndex: number) {
     isLoading.set(true);
   }
   try {
-    const info = await apiSwitchProject(projectIdx);
+    // Track the in-flight backend switch BEFORE the first await: remounting
+    // views fire their on-mount fetches in the microtask flush that follows,
+    // and must gate on THIS switch — otherwise their IPC lands while the
+    // Rust-side active project is still the outgoing one (wrong-repo data).
+    const switchPromise = apiSwitchProject(projectIdx);
+    trackRepoSwitch(switchPromise);
+    const info = await switchPromise;
     repoInfo.set(info);
 
     // Remotes feed `projectProvider` (status-bar forge pill, provider

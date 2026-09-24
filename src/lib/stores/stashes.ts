@@ -18,6 +18,7 @@ import {
 } from "../api/tauri";
 import { runMutation } from "../api/runMutation";
 import { createFetchGuard, fetchIntoStore } from "../utils/store-helpers";
+import { whenRepoSwitchSettled } from "./repoSwitchReadiness";
 
 export const stashes = writable<StashEntry[]>([]);
 export const stashesLoading = writable(false);
@@ -38,6 +39,10 @@ export async function refreshStashes(): Promise<void> {
 
 /** Refresh the stash entry list. Clears selection if the selected stash was dropped. */
 export async function loadStashes() {
+  // See worktrees.ts: never issue active-repo IPC while a backend
+  // `switch_project` is still in flight. Loading first — no empty flash.
+  stashesLoading.set(true);
+  await whenRepoSwitchSettled();
   await fetchIntoStore(stashes, stashesLoading, apiStashEntries, [], fetchGuard);
 
   // If selected stash no longer exists, clear selection

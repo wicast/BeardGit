@@ -29,6 +29,7 @@ import {
 import { runMutation } from "../api/runMutation";
 import { fetchListIntoStore } from "../utils/store-helpers";
 import { activeField, getActiveRepoState } from "./repo-state";
+import { whenRepoSwitchSettled } from "./repoSwitchReadiness";
 
 // Facades over the active repo's BranchesSlice. Components keep importing
 // these unchanged; the data is now per-repo.
@@ -67,6 +68,13 @@ export const selectedBranchInfo = derived(
 );
 
 export async function refreshBranches() {
+  // See worktrees.ts: never issue active-repo IPC while a backend
+  // `switch_project` is still in flight — the facade already targets the
+  // incoming repo's slice, so a wrong-repo read would poison it. No
+  // pre-gate loading flag here: unlike the clear-on-leave singletons the
+  // slice survives switches, so a flag set pre-gate could strand in a
+  // backgrounded repo's slice.
+  await whenRepoSwitchSettled();
   await fetchListIntoStore(
     branches,
     branchesLoading,

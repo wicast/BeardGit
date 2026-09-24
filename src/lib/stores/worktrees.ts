@@ -17,6 +17,7 @@ import {
 import { runMutation } from "$lib/api/runMutation";
 import type { WorktreeInfo, AiWorktree, EnrichedWorktree } from "$lib/types";
 import { createFetchGuard, fetchIntoStore } from "$lib/utils/store-helpers";
+import { whenRepoSwitchSettled } from "./repoSwitchReadiness";
 
 /** All worktrees for the active repository, enriched with AI data. */
 export const worktrees = writable<EnrichedWorktree[]>([]);
@@ -60,6 +61,13 @@ export function enrichWorktrees(
 
 /** Fetch worktrees from both git and AI backends, merge, and update store. */
 export async function refreshWorktrees() {
+  // Wait out an in-flight backend project switch: `list_worktrees` resolves
+  // against the Rust-side active project, which flips only when
+  // `switch_project` finishes — an on-mount fetch during the switch window
+  // would otherwise return the outgoing project's list. Loading goes up
+  // front so the list shows a spinner instead of flashing the empty state.
+  worktreeLoading.set(true);
+  await whenRepoSwitchSettled();
   await fetchIntoStore(
     worktrees,
     worktreeLoading,

@@ -7,6 +7,7 @@ import type { ReflogEntry } from "../types";
 import type { RawDiffContent } from "./graph";
 import * as api from "../api/tauri";
 import { createFetchGuard, fetchIntoStore } from "../utils/store-helpers";
+import { whenRepoSwitchSettled } from "./repoSwitchReadiness";
 
 /** All loaded reflog entries (most recent first). */
 export const reflogEntries = writable<ReflogEntry[]>([]);
@@ -34,6 +35,10 @@ const fetchGuard = createFetchGuard();
 
 /** Load reflog entries from the backend. */
 export async function loadReflog(limit = 100): Promise<void> {
+  // See worktrees.ts: never issue active-repo IPC while a backend
+  // `switch_project` is still in flight. Loading first — no empty flash.
+  reflogLoading.set(true);
+  await whenRepoSwitchSettled();
   await fetchIntoStore(reflogEntries, reflogLoading, () => api.getReflog(limit), [], fetchGuard);
 }
 

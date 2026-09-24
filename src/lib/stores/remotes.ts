@@ -14,6 +14,7 @@ import { writable, derived } from "svelte/store";
 import { getRemotes } from "../api/tauri";
 import type { RemoteInfo } from "../types";
 import { createFetchGuard } from "../utils/store-helpers";
+import { whenRepoSwitchSettled } from "./repoSwitchReadiness";
 
 export const remotes = writable<RemoteInfo[]>([]);
 
@@ -31,6 +32,9 @@ const fetchGuard = createFetchGuard();
  * critical path.
  */
 export async function refreshRemotes(): Promise<void> {
+  // See worktrees.ts: never issue active-repo IPC while a backend
+  // `switch_project` is still in flight.
+  await whenRepoSwitchSettled();
   const token = fetchGuard.next();
   try {
     const list = await getRemotes();

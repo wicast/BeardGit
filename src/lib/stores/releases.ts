@@ -31,6 +31,7 @@ import {
 } from "../api/tauri";
 import { runMutation } from "../api/runMutation";
 import { createFetchGuard, fetchListIntoStore } from "../utils/store-helpers";
+import { whenRepoSwitchSettled } from "./repoSwitchReadiness";
 import { withTimeout } from "../utils/withTimeout";
 import { addToast } from "./toast";
 import * as m from "$lib/paraglide/messages";
@@ -74,6 +75,10 @@ const fetchGuard = createFetchGuard();
 
 /** Fetch the releases list (newest 30). Replaces current list. */
 export async function refreshReleases(): Promise<void> {
+  // See worktrees.ts: never issue active-repo IPC while a backend
+  // `switch_project` is still in flight. Loading first — no empty flash.
+  releasesLoading.set(true);
+  await whenRepoSwitchSettled();
   await fetchListIntoStore(
     releases,
     releasesLoading,

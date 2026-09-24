@@ -8,6 +8,7 @@
 import { get, writable } from "svelte/store";
 import * as api from "$lib/api/tauri";
 import { tasks, cancelTask } from "$lib/stores/taskPanel";
+import { whenRepoSwitchSettled } from "./repoSwitchReadiness";
 import type { BisectState, TaskId } from "$lib/types";
 
 /** Reactive bisect session state. */
@@ -57,6 +58,9 @@ function waitForTaskTerminal(taskId: TaskId): Promise<void> {
 
 /** Fetch and update the current bisect state from the backend. */
 export async function refreshBisectState(): Promise<void> {
+  // See worktrees.ts: never issue active-repo IPC while a backend
+  // `switch_project` is still in flight.
+  await whenRepoSwitchSettled();
   const state = await api.bisectGetState();
   bisectState.set(state);
   if (state.active) {

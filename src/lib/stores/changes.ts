@@ -27,6 +27,7 @@ import {
 } from "../api/tauri";
 import { runMutation } from "../api/runMutation";
 import { activeField, getActiveRepoState } from "./repo-state";
+import { whenRepoSwitchSettled } from "./repoSwitchReadiness";
 
 // ── Migrated to the RepoState container (spec 08) ─────────────────────
 // The staging-area state below now lives per-repo in `RepoState.changes`
@@ -63,6 +64,10 @@ export function clearChangesState(): void {
 }
 
 export async function refreshStatuses() {
+  // See worktrees.ts: never issue active-repo IPC while a backend
+  // `switch_project` is still in flight — the facade already points at
+  // the incoming repo's slice, so a wrong-repo read would poison it.
+  await whenRepoSwitchSettled();
   const statuses = await apiGetStatuses();
   fileStatuses.set(statuses);
 }
@@ -78,6 +83,8 @@ export async function refreshStatuses() {
  * huge generated/minified file.
  */
 export async function refreshDiffs() {
+  // See refreshStatuses: wait out any in-flight backend project switch.
+  await whenRepoSwitchSettled();
   const [workdir, index] = await Promise.all([
     apiDiffStatsWorkdir(),
     apiDiffStatsIndex(),

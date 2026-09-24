@@ -19,6 +19,7 @@ import {
   submoduleAbsPath as apiAbsPath,
 } from "../api/tauri";
 import { createFetchGuard, fetchIntoStore } from "../utils/store-helpers";
+import { whenRepoSwitchSettled } from "./repoSwitchReadiness";
 
 /** List of submodules in the active repository. */
 export const submodules = writable<SubmoduleInfo[]>([]);
@@ -31,6 +32,10 @@ const fetchGuard = createFetchGuard();
 
 /** Fetch the submodule list from the backend. */
 export async function refreshSubmodules() {
+  // See worktrees.ts: never issue active-repo IPC while a backend
+  // `switch_project` is still in flight. Loading first — no empty flash.
+  submodulesLoading.set(true);
+  await whenRepoSwitchSettled();
   await fetchIntoStore(submodules, submodulesLoading, () => apiList(), [], fetchGuard);
 }
 
