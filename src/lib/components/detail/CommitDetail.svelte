@@ -26,6 +26,7 @@
   import { activeProject } from "$lib/stores/projects";
   import { copyPathMenuItems } from "$lib/utils/copy-path-menu";
   import { formatDateTime } from "../../utils/time";
+  import { refKind, refLabel, type RefKind } from "../../utils/ref";
   import { get } from "svelte/store";
 
   let {
@@ -159,25 +160,22 @@
     onFileClick?.(path);
   }
 
-  function formatRef(ref: string): string {
-    if (ref.startsWith("refs/heads/")) return ref.replace("refs/heads/", "");
-    if (ref.startsWith("refs/remotes/")) return ref.replace("refs/remotes/", "");
-    if (ref.startsWith("refs/tags/")) return ref.replace("refs/tags/", "");
-    if (ref === "HEAD") return "HEAD";
-    return ref;
-  }
-
   /**
    * Badge colour by ref kind — the same `--graph-ref-*` tokens the theme
    * feeds the canvas graph, so a ref looks the same here and in the graph.
-   * (It used to hash the name over a 5-colour palette while the graph
-   * hashed it over the lane palette: one branch, two colours.)
+   * (`other` has no token of its own: `refs/stash` and friends fall back to
+   * the branch colour, as the graph renderer does.)
    */
+  const REF_KIND_TOKEN: Record<RefKind, string> = {
+    head: "var(--graph-ref-head)",
+    branch: "var(--graph-ref-branch)",
+    remote: "var(--graph-ref-remote)",
+    tag: "var(--graph-ref-tag)",
+    other: "var(--graph-ref-branch)",
+  };
+
   function refToken(ref: string): string {
-    if (ref === "HEAD") return "var(--graph-ref-head)";
-    if (ref.startsWith("refs/remotes/")) return "var(--graph-ref-remote)";
-    if (ref.startsWith("refs/tags/")) return "var(--graph-ref-tag)";
-    return "var(--graph-ref-branch)";
+    return REF_KIND_TOKEN[refKind(ref)];
   }
 
   function refStyle(ref: string): string {
@@ -278,7 +276,7 @@
         <div class="detail-label">{m.commit_detail_refs()}</div>
         <div class="ref-list">
           {#each commit.refs as ref}
-            <span class="ref-badge" style={refStyle(ref)}>{formatRef(ref)}</span>
+            <span class="ref-badge" style={refStyle(ref)}>{refLabel(ref)}</span>
           {/each}
         </div>
       </div>

@@ -34,6 +34,7 @@
   import { mrPrByBranch } from "../../stores/mr-pr";
   import { activeProvider } from "../../stores/provider";
   import { shortOid } from "../../utils/git";
+  import { refBranchName } from "../../utils/ref";
   import { bisectState, markGood, markBad, skipCommit } from "../../stores/bisect";
   import { addToast } from "../../stores/toast";
   import { getErrorMessage } from "$lib/api/errors";
@@ -672,23 +673,22 @@
       {
         label: m.graph_checkout({ sha }),
         action: async () => {
-          // For commits with refs, checkout the branch name
-          if (node.refs.length > 0) {
-            const branchRef = node.refs.find(r => !r.startsWith("refs/remotes/") && !r.startsWith("refs/tags/"));
-            if (branchRef) {
-              const branchName = branchRef.replace("refs/heads/", "");
-              try {
-                await runMutation({
-                  kind: "checkout",
-                  invoke: () => checkoutBranch(branchName),
-                  successToast: () => `Checked out ${branchName}`,
-                  failureToastPrefix: "Checkout failed",
-                });
-              } catch {
-                // runMutation already surfaced the toast.
-              }
-              return;
+          // For commits with a branch ref, checkout that branch by name.
+          // (Tags and remotes resolve to null, so those fall through to the
+          // detached checkout below.)
+          const checkoutBranchName = node.refs.map(refBranchName).find((r) => r !== null);
+          if (checkoutBranchName) {
+            try {
+              await runMutation({
+                kind: "checkout",
+                invoke: () => checkoutBranch(checkoutBranchName),
+                successToast: () => `Checked out ${checkoutBranchName}`,
+                failureToastPrefix: "Checkout failed",
+              });
+            } catch {
+              // runMutation already surfaced the toast.
             }
+            return;
           }
           try {
             await runMutation({

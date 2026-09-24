@@ -22,7 +22,8 @@ pub struct GraphCommit {
     pub parents: Vec<String>,
     /// Unix timestamp of the author date, used for ordering.
     pub timestamp: i64,
-    /// Branch and tag names that point at this commit (e.g. `"HEAD"`, `"main"`).
+    /// Fully-qualified ref names that point at this commit
+    /// (e.g. `refs/heads/main`, `refs/tags/v1.0`).
     pub refs: Vec<String>,
     /// First line of the commit message.
     pub summary: String,
@@ -43,7 +44,7 @@ pub struct DagNode {
     pub parents: Vec<Arc<str>>,
     /// OIDs of commits that have this node as a parent.
     pub children: Vec<Arc<str>>,
-    /// Branch and tag names pointing at this commit.
+    /// Fully-qualified ref names pointing at this commit.
     pub refs: Vec<String>,
     /// First line of the commit message.
     pub summary: String,

@@ -14,6 +14,7 @@
 import type { LayoutNode, LaneSegment, MergeCurve, GraphTheme, MrPr } from "../../types";
 import { formatRelativeTimeUnix } from "../../utils/time";
 import { shortOid } from "../../utils/git";
+import { refBranchName, refKind, refLabel } from "../../utils/ref";
 import { recordRenderMetrics } from "./graph-perf";
 
 export const ROW_HEIGHT = 28;
@@ -732,7 +733,7 @@ export function renderGraph(
       ctx.textBaseline = "middle";
 
       for (const ref of node.refs) {
-        const label = formatRef(ref);
+        const label = refLabel(ref);
         const badgeColor = refColor(ref, theme);
         const textWidth = ctx.measureText(label).width;
         const badgeWidth = textWidth + REF_BADGE_PADDING * 2;
@@ -761,8 +762,10 @@ export function renderGraph(
     // ── MR/PR badges (after ref badges, before summary) ──
     if (mrPrByBranch.size > 0 && node.refs.length > 0) {
       for (const ref of node.refs) {
-        const branchName = formatRef(ref);
-        const mrPr = mrPrByBranch.get(branchName);
+        // `mrPrByBranch` is keyed by local branch name: a heads ref yields the
+        // branch, anything else falls back to the display label.
+        const branch = refBranchName(ref) ?? refLabel(ref);
+        const mrPr = mrPrByBranch.get(branch);
         if (mrPr && currentX + 60 < messageEndX) {
           ctx.save();
           ctx.beginPath();
@@ -870,16 +873,12 @@ function truncateText(ctx: CanvasRenderingContext2D, text: string, maxWidth: num
   return lo > 0 ? text.slice(0, lo) + "\u2026" : "\u2026";
 }
 
-function formatRef(ref: string): string {
-  if (ref.startsWith("refs/heads/")) return ref.replace("refs/heads/", "");
-  if (ref.startsWith("refs/remotes/")) return ref.replace("refs/remotes/", "");
-  if (ref.startsWith("refs/tags/")) return ref.replace("refs/tags/", "");
-  if (ref === "HEAD") return "HEAD";
-  return ref;
-}
-
 /**
  * Badge colour by ref kind, from the theme's `ref_*` fields.
+ *
+ * The kind comes from the fully-qualified ref name (`utils/ref`), never from
+ * the label: a stripped `v1.0` is indistinguishable from a same-named branch,
+ * so tag badges used to render in the branch colour.
  *
  * Badges used to be coloured by a hash of the name over the lane palette,
  * which made a branch share its colour with an unrelated lane, disagreed
@@ -887,10 +886,16 @@ function formatRef(ref: string): string {
  * the theme's branch / remote / tag colours unread.
  */
 export function refColor(ref: string, theme: GraphTheme): string {
-  if (ref === "HEAD") return theme.refBadge.head;
-  if (ref.startsWith("refs/remotes/")) return theme.refBadge.remote;
-  if (ref.startsWith("refs/tags/")) return theme.refBadge.tag;
-  return theme.refBadge.branch;
+  switch (refKind(ref)) {
+    case "head":
+      return theme.refBadge.head;
+    case "remote":
+      return theme.refBadge.remote;
+    case "tag":
+      return theme.refBadge.tag;
+    default:
+      return theme.refBadge.branch;
+  }
 }
 
 function roundRect(

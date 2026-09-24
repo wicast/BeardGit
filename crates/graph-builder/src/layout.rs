@@ -199,7 +199,9 @@ pub struct LayoutNode {
     pub lane: usize,
     /// Vertical row index (0 = newest commit).
     pub row: usize,
-    /// Branch and tag names pointing at this commit.
+    /// Fully-qualified ref names pointing at this commit
+    /// (`refs/heads/main`, `refs/tags/v1.0`); [`tag_sync_states`] keys the
+    /// local/remote pairing off these prefixes.
     pub refs: Vec<String>,
     /// First line of the commit message.
     pub summary: String,

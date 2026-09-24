@@ -27,7 +27,8 @@ pub struct CommitInfo {
     pub timestamp: i64,
     /// OIDs of parent commits (empty for root commits, two entries for merges).
     pub parents: Vec<String>,
-    /// Short ref names (branches, tags) that point directly at this commit.
+    /// Fully-qualified ref names (`refs/heads/main`, `refs/tags/v1.0`, …)
+    /// that point directly at this commit.
     pub refs: Vec<String>,
 }
 
@@ -56,7 +57,17 @@ fn commit_to_info(
     }
 }
 
-/// Build a map from OID (as string) → list of short ref names pointing to it.
+/// Build a map from OID (as string) → list of fully-qualified ref names
+/// pointing to it (`refs/heads/main`, `refs/remotes/origin/main`,
+/// `refs/tags/v1.0`, …). Symbolic refs (`HEAD`) resolve to their target,
+/// so the qualified name of the branch they point at is recorded instead.
+///
+/// `Reference::name`, not `shorthand`: the stripped form (`main`, `origin/main`,
+/// `v1.0`) is ambiguous — a tag and a same-named branch collapse to one string,
+/// so the graph renderer classified tags as branches and coloured them with the
+/// branch badge. Qualification is what every downstream consumer keys on
+/// (`GraphLayout::tag_sync_states`, `graph_cache::ref_snapshot`, and the
+/// frontend `refKind`/`refLabel` pair).
 fn build_ref_map(repo: &git2::Repository) -> HashMap<String, Vec<String>> {
     let mut map: HashMap<String, Vec<String>> = HashMap::new();
 
@@ -75,24 +86,23 @@ fn build_ref_map(repo: &git2::Repository) -> HashMap<String, Vec<String>> {
                 continue;
             };
 
-            let shorthand = reference
-                .shorthand()
-                .unwrap_or_else(|| reference.name().unwrap_or("unknown"))
+            let name = reference
+                .name()
+                .unwrap_or_else(|| reference.shorthand().unwrap_or("unknown"))
                 .to_owned();
 
-            map.entry(target_oid.to_string())
-                .or_default()
-                .push(shorthand);
+            map.entry(target_oid.to_string()).or_default().push(name);
         }
     }
 
     map
 }
 
-/// Return the short refs that point at `target` without materialising the
-/// full repository-wide ref map. O(refs) but with a single pass and no map
-/// allocation per OID — used by [`Repository::get_commit`] which only needs
-/// the refs of a single commit.
+/// Return the fully-qualified refs that point at `target` without
+/// materialising the full repository-wide ref map. O(refs) but with a single
+/// pass and no map allocation per OID — used by [`Repository::get_commit`]
+/// which only needs the refs of a single commit. See [`build_ref_map`] for
+/// why the qualified name (not `shorthand`) is the contract here.
 fn refs_for_oid(repo: &git2::Repository, target: git2::Oid) -> Vec<String> {
     let Ok(references) = repo.references() else {
         return Vec::new();
@@ -112,8 +122,8 @@ fn refs_for_oid(repo: &git2::Repository, target: git2::Oid) -> Vec<String> {
         }
         hits.push(
             reference
-                .shorthand()
-                .unwrap_or_else(|| reference.name().unwrap_or("unknown"))
+                .name()
+                .unwrap_or_else(|| reference.shorthand().unwrap_or("unknown"))
                 .to_owned(),
         );
     }
@@ -688,6 +698,50 @@ mod tests {
         assert_eq!(fetched.summary, target.summary);
         assert_eq!(fetched.author, target.author);
         assert_eq!(fetched.parents, target.parents);
+    }
+
+    #[test]
+    fn test_refs_are_fully_qualified_so_tags_are_not_confused_with_branches() {
+        let (_dir, path) = create_repo_with_n_commits(2);
+        let git_repo = git2::Repository::open(&path).unwrap();
+
+        let head_branch = git_repo.head().unwrap().shorthand().unwrap().to_string();
+        let head_oid = git_repo.head().unwrap().target().unwrap();
+        let head_commit = git_repo.find_commit(head_oid).unwrap();
+        // Lightweight tag on the tip: `refs/tags/v1.0.0` has the same
+        // `shorthand()` (`v1.0.0`) as `refs/heads/v1.0.0` would, so the
+        // qualification is what keeps the two kinds apart.
+        git_repo
+            .tag_lightweight("v1.0.0", &head_commit.into_object(), false)
+            .unwrap();
+
+        let repo = Repository::open(&path).unwrap();
+        let commits = repo.walk_commits(0, 100).unwrap();
+        let tagged = commits
+            .iter()
+            .find(|c| c.oid == head_oid.to_string())
+            .unwrap();
+
+        let branch_ref = format!("refs/heads/{head_branch}");
+        assert!(
+            tagged.refs.iter().any(|r| r == branch_ref.as_str()),
+            "expected branch ref {branch_ref} in {:?}",
+            tagged.refs
+        );
+        assert!(
+            tagged.refs.iter().any(|r| r == "refs/tags/v1.0.0"),
+            "expected tag ref refs/tags/v1.0.0 in {:?}",
+            tagged.refs
+        );
+        assert!(
+            tagged.refs.iter().all(|r| r != "v1.0.0"),
+            "shorthand tag name must not leak into the ref list: {:?}",
+            tagged.refs
+        );
+
+        // The single-commit path must agree with the walk path.
+        let single = repo.get_commit(&tagged.oid).unwrap();
+        assert_eq!(single.refs, tagged.refs);
     }
 
     #[test]

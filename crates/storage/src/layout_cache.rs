@@ -27,7 +27,13 @@ use sha2::{Digest, Sha256};
 ///
 /// Bumped 3 → 4 when `MergeCurve` gained `opens_lane`; a cached layout
 /// deserialises it as `false` and every merge bend would lose its shape.
-pub const SCHEMA_VERSION: u32 = 4;
+///
+/// Bumped 4 → 5 when node `refs` switched from `shorthand` to fully-qualified
+/// names (`refs/tags/v1.0` instead of `v1.0`). The cache key only sees the
+/// repo state, not the ref-name convention, so without the bump a cached
+/// layout would keep serving bare tag names — which the renderer reads as
+/// branches — until something else moved a ref.
+pub const SCHEMA_VERSION: u32 = 5;
 
 /// A single repo's cached graph layout along with the state that produced it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
