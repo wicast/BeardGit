@@ -1,7 +1,12 @@
 //! Staging area (index) inspection and manipulation.
 //!
 //! Extends [`Repository`] with methods to query the working-directory status
-//! and to move files between the working directory and the index.
+//! and to move files between the working directory and the index. The
+//! mutating half (stage / discard) routes through the system `git` CLI
+//! rather than libgit2 index APIs: libgit2 does not load the repo's
+//! configured `filter.<name>.clean/smudge` filters, so its index writes
+//! would bypass git-lfs (staging smudged bytes instead of the pointer) and
+//! its worktree restores would overwrite smudged files with pointer text.
 
 use serde::Serialize;
 use std::path::Path;
@@ -96,28 +101,69 @@ impl Repository {
     }
 
     /// Stage specific files (add to index).
+    ///
+    /// Routes through the system `git` CLI rather than libgit2's
+    /// `index.add_path` because libgit2 never runs the repo's configured
+    /// clean filters — its filter registry only knows the built-in
+    /// CRLF/IDENT filters, so `filter.lfs.clean` (written by
+    /// `git lfs install`) is invisible to it. Staging a git-lfs-tracked
+    /// file through libgit2 hashes the *smudged* working-tree bytes into
+    /// the index, so the commit stores the raw asset instead of the
+    /// pointer and `git push` uploads it as a normal git object. The CLI
+    /// runs the clean filter, matching `git add <path>` semantics.
+    ///
+    /// Deleted paths are staged with `git rm --cached --ignore-unmatch`
+    /// (index-only, no worktree effect), mirroring the old
+    /// `index.remove_path` no-op for paths that were never tracked.
     pub fn stage_files(&self, paths: &[String]) -> Result<(), GitError> {
-        let repo = self.inner();
-        let mut index = repo.index()?;
+        if paths.is_empty() {
+            return Ok(());
+        }
+
+        let mut existing: Vec<&str> = Vec::new();
+        let mut missing: Vec<&str> = Vec::new();
         for path in paths {
-            let full_path = self.path().join(path);
-            if full_path.exists() {
-                index.add_path(Path::new(path))?;
+            if self.path().join(path).exists() {
+                existing.push(path);
             } else {
-                index.remove_path(Path::new(path))?;
+                missing.push(path);
             }
         }
-        index.write()?;
+
+        if !existing.is_empty() {
+            let mut args: Vec<&str> = vec!["add", "--"];
+            args.extend(existing.iter().copied());
+            let result = self.git_cmd(&args)?;
+            if !result.success {
+                return Err(GitError::CliError(result.stderr));
+            }
+        }
+
+        if !missing.is_empty() {
+            let mut args: Vec<&str> = vec!["rm", "--cached", "--ignore-unmatch", "--"];
+            args.extend(missing.iter().copied());
+            let result = self.git_cmd(&args)?;
+            if !result.success {
+                return Err(GitError::CliError(result.stderr));
+            }
+        }
+
         Ok(())
     }
 
     /// Unstage specific files (reset from index to HEAD).
+    ///
+    /// The index is force-re-read before it is rewritten: staging writes it
+    /// through the git CLI, and libgit2 caches the index on the Repository
+    /// handle, so a handle that touched the index earlier in its life would
+    /// otherwise persist a stale copy.
     pub fn unstage_files(&self, paths: &[String]) -> Result<(), GitError> {
         let repo = self.inner();
         let head = repo.head()?.peel_to_commit()?;
         let head_tree = head.tree()?;
 
         let mut index = repo.index()?;
+        index.read(true)?;
         for path in paths {
             if let Ok(entry) = head_tree.get_path(Path::new(path)) {
                 // Reset to HEAD version
@@ -145,12 +191,17 @@ impl Repository {
     }
 
     /// Stage all changes.
+    ///
+    /// Uses the git CLI (`git add -A`) for the same clean-filter reason as
+    /// [`Self::stage_files`]: a libgit2 `add_all` would hash smudged
+    /// git-lfs content into the index instead of the pointer.
     pub fn stage_all(&self) -> Result<(), GitError> {
-        let repo = self.inner();
-        let mut index = repo.index()?;
-        index.add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)?;
-        index.write()?;
-        Ok(())
+        let result = self.git_cmd(&["add", "-A"])?;
+        if result.success {
+            Ok(())
+        } else {
+            Err(GitError::CliError(result.stderr))
+        }
     }
 
     /// Unstage all changes.
@@ -216,12 +267,19 @@ impl Repository {
         }
 
         if !tracked.is_empty() {
-            let mut checkout = git2::build::CheckoutBuilder::new();
-            checkout.force();
-            for p in &tracked {
-                checkout.path(p.as_str());
+            // `git checkout -- <paths>` restores the working tree from the
+            // index — the same semantics as the libgit2 `checkout_index`
+            // this replaces, but through the CLI so the repo's smudge
+            // filters run: a libgit2 restore would overwrite a smudged
+            // git-lfs file with its pointer text (and `git status` would
+            // then report the file as clean, because the pointer text
+            // hashes to the pointer OID the index already holds).
+            let mut args: Vec<&str> = vec!["checkout", "--"];
+            args.extend(tracked.iter().map(|s| s.as_str()));
+            let result = self.git_cmd(&args)?;
+            if !result.success {
+                return Err(GitError::CliError(result.stderr));
             }
-            repo.checkout_index(None, Some(&mut checkout))?;
         }
 
         if !untracked.is_empty() {
@@ -495,6 +553,52 @@ mod tests {
             "all files should be unstaged after unstage_all"
         );
         assert_eq!(statuses.len(), 2, "should still have 2 changed files");
+    }
+
+    // ── LFS filter round-trip ───────────────────────────────────────────
+    //
+    // libgit2 never runs the repo's configured clean/smudge filters, so
+    // index writes through it would stage smudged bytes instead of the
+    // pointer, and worktree restores would overwrite smudged files with
+    // pointer text. These pin the CLI routing; they skip when git-lfs is
+    // not installed.
+
+    #[test]
+    fn stage_commit_and_discard_lfs_file_round_trip_through_filters() {
+        let Some((_tmp, work)) = crate::test_support::create_lfs_repo_with_fetched_branch() else {
+            return;
+        };
+        // Onto the freshly fetched branch via the CLI (checkout has its own
+        // LFS tests in operations.rs).
+        crate::test_support::run_git(&work, &["checkout", "-q", "feature"]);
+        let repo = Repository::open(&work).unwrap();
+        assert_eq!(
+            fs::read_to_string(work.join("asset.bin")).unwrap(),
+            crate::test_support::LFS_FEATURE_CONTENT,
+            "precondition: feature's LFS file is smudged"
+        );
+
+        // Stage + commit an edit: the committed blob must be the pointer,
+        // not the raw edited bytes.
+        fs::write(work.join("asset.bin"), "EDITED-ASSET").unwrap();
+        repo.stage_files(&["asset.bin".to_string()]).unwrap();
+        repo.create_commit("edit asset").unwrap();
+        let blob =
+            crate::test_support::run_git_capture(&work, &["cat-file", "-p", "HEAD:asset.bin"]);
+        assert!(
+            blob.starts_with("version https://git-lfs.github.com/spec/v1"),
+            "staged+committed blob must be an LFS pointer, got: {blob:?}"
+        );
+
+        // Discard a further edit: the working tree must come back as the
+        // smudged (real) content, not the pointer text.
+        fs::write(work.join("asset.bin"), "DIRTY").unwrap();
+        repo.discard_files(&["asset.bin".to_string()]).unwrap();
+        let content = fs::read_to_string(work.join("asset.bin")).unwrap();
+        assert_eq!(
+            content, "EDITED-ASSET",
+            "discard must restore the smudged content, not the pointer"
+        );
     }
 
     // ── Discarding untracked symlinks ─────────────────────────────────────
