@@ -1,8 +1,13 @@
 //! High-level git write operations: committing, branching, and checking out.
 //!
-//! Extends [`Repository`] with methods that modify repository state using
-//! `libgit2`. For operations that `libgit2` cannot handle (merge, rebase,
-//! push, etc.) see the [`cli`](crate::cli) module.
+//! Commit and branch creation use `libgit2`. Checkout deliberately routes
+//! through the system `git` CLI ([`Repository::git_cmd`]) instead: libgit2
+//! does not load the repo's configured `filter.<name>.clean/smudge` filters
+//! (its registry only knows the built-in CRLF/IDENT filters), so a libgit2
+//! checkout would write git-lfs pointer blobs to the working tree verbatim.
+//! The CLI runs the configured smudge filters, exactly like `git checkout`
+//! from a terminal. For operations that libgit2 cannot handle at all (merge,
+//! rebase, push, etc.) see the [`cli`](crate::cli) module.
 
 // Operations module — commit, branch, checkout
 
@@ -29,6 +34,12 @@ impl Repository {
         let repo = self.inner();
         let sig = repo.signature()?;
         let mut index = repo.index()?;
+        // The staging commands write the index through the git CLI
+        // (`git add`), and libgit2 caches the index on the Repository
+        // handle — a handle that read the index before that CLI write
+        // would otherwise build this commit's tree from the stale
+        // entries. Force a re-read from disk first.
+        index.read(true)?;
         let tree_id = index.write_tree()?;
         let tree = repo.find_tree(tree_id)?;
 
@@ -93,44 +104,66 @@ impl Repository {
     }
 
     /// Switch HEAD to an existing branch.
+    ///
+    /// Routes through the system `git` CLI rather than libgit2 because
+    /// libgit2's filter registry contains only the built-in CRLF/IDENT
+    /// filters — it never reads the `filter.<name>.clean/smudge/process`
+    /// entries that `git lfs install` writes to the repo config. A libgit2
+    /// checkout therefore writes LFS pointer blobs to the working tree
+    /// verbatim, leaving every LFS-tracked file on the target branch as a
+    /// ~130-byte text pointer until the user manually runs `git lfs
+    /// checkout`. The CLI runs the configured smudge filters (downloading
+    /// missing objects on demand), matching `git checkout` semantics.
+    ///
+    /// A safe checkout over a dirty working tree is refused by git — map it
+    /// to the distinct [`GitError::WouldLoseChanges`] variant so the UI can
+    /// tell the user to commit or stash first.
     #[instrument(skip(self), fields(branch = %name))]
     pub fn checkout_branch(&self, name: &str) -> Result<(), GitError> {
-        let repo = self.inner();
-        let obj = repo.revparse_single(&format!("refs/heads/{name}"))?;
-        // A default (safe) checkout over a dirty working tree fails with a
-        // libgit2 conflict — surface it as a distinct variant so the UI can
-        // tell the user to commit or stash first.
-        repo.checkout_tree(&obj, None).map_err(|e| {
-            if e.code() == git2::ErrorCode::Conflict {
-                GitError::WouldLoseChanges(e.message().to_string())
-            } else {
-                GitError::Git(e)
-            }
-        })?;
-        repo.set_head(&format!("refs/heads/{name}"))?;
-        Ok(())
+        // `git checkout` has no `--` form for the branch argument, so a name
+        // starting with `-` would be parsed as an option. Reject it up front
+        // instead of letting git misread it (or, worse, a name like
+        // `--help` succeed as something else).
+        if name.starts_with('-') {
+            return Err(GitError::InvalidArgument(format!(
+                "invalid branch name: {name}"
+            )));
+        }
+        let result = self.git_cmd(&["checkout", name])?;
+        if result.success {
+            Ok(())
+        } else if is_would_lose_changes(&result.stderr) {
+            // Both the "local changes would be overwritten" and the
+            // "untracked working tree files would be overwritten" refusals
+            // contain this phrase — either way the user has to commit,
+            // stash, or move files first.
+            Err(GitError::WouldLoseChanges(result.stderr))
+        } else {
+            Err(GitError::CliError(result.stderr))
+        }
     }
 
     /// Checkout a specific commit (detached HEAD).
+    ///
+    /// Uses the git CLI for the same filter reason as
+    /// [`Self::checkout_branch`]: only the CLI runs the repo's configured
+    /// smudge filters, so LFS-tracked files materialize to their real
+    /// content instead of pointer text.
     #[instrument(skip(self), fields(oid = %oid))]
     pub fn checkout_detached(&self, oid: &str) -> Result<(), GitError> {
-        let repo = self.inner();
-        let obj = repo.revparse_single(oid)?;
-        let commit = obj
-            .peel_to_commit()
-            .map_err(|_| GitError::Git(git2::Error::from_str("not a commit")))?;
-        // A default (safe) checkout over a dirty working tree fails with a
-        // libgit2 conflict — surface it as a distinct variant so the UI can
-        // tell the user to commit or stash first.
-        repo.checkout_tree(commit.as_object(), None).map_err(|e| {
-            if e.code() == git2::ErrorCode::Conflict {
-                GitError::WouldLoseChanges(e.message().to_string())
-            } else {
-                GitError::Git(e)
-            }
-        })?;
-        repo.set_head_detached(commit.id())?;
-        Ok(())
+        if oid.starts_with('-') {
+            return Err(GitError::InvalidArgument(format!(
+                "invalid commit oid: {oid}"
+            )));
+        }
+        let result = self.git_cmd(&["checkout", "--detach", oid])?;
+        if result.success {
+            Ok(())
+        } else if is_would_lose_changes(&result.stderr) {
+            Err(GitError::WouldLoseChanges(result.stderr))
+        } else {
+            Err(GitError::CliError(result.stderr))
+        }
     }
 
     /// Return the short name of the current branch, or None if detached.
@@ -149,6 +182,19 @@ impl Repository {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+/// True when a failed `git checkout` refused because the working tree holds
+/// changes the checkout would clobber.
+///
+/// Covers both refusals git prints in that situation — modified tracked
+/// files ("Your local changes to the following files would be overwritten by
+/// checkout") and untracked files in the way ("The following untracked
+/// working tree files would be overwritten by checkout") — so callers can
+/// keep mapping them to [`GitError::WouldLoseChanges`] like the libgit2
+/// conflict they replaced.
+fn is_would_lose_changes(stderr: &str) -> bool {
+    stderr.contains("would be overwritten by checkout")
+}
 
 #[cfg(test)]
 mod tests {
@@ -175,6 +221,55 @@ mod tests {
             .unwrap();
         let repo = Repository::open(dir.path()).unwrap();
         (dir, repo)
+    }
+
+    // ── LFS filter round-trip ───────────────────────────────────────────
+    //
+    // libgit2 does not load the repo's configured `filter.lfs.*` entries,
+    // so a checkout that bypasses the git CLI leaves LFS-tracked files as
+    // pointer text on disk (and never downloads the objects). These pin
+    // the CLI routing; they skip when git-lfs is not installed.
+
+    fn lfs_fixture() -> Option<(tempfile::TempDir, std::path::PathBuf)> {
+        crate::test_support::create_lfs_repo_with_fetched_branch()
+    }
+
+    #[test]
+    fn checkout_branch_after_fetch_smudges_lfs_files() {
+        let Some((_tmp, work)) = lfs_fixture() else {
+            return;
+        };
+
+        // The reported flow: fetch (done by the fixture), then "New branch
+        // from here" on the freshly fetched remote branch — create_branch_at
+        // followed by checkout_branch.
+        let remote_tip =
+            crate::test_support::run_git_capture(&work, &["rev-parse", "origin/feature"]);
+        let repo = Repository::open(&work).unwrap();
+        repo.create_branch_at("feature", remote_tip.trim()).unwrap();
+        repo.checkout_branch("feature").unwrap();
+
+        let content = fs::read_to_string(work.join("asset.bin")).unwrap();
+        assert_eq!(
+            content,
+            crate::test_support::LFS_FEATURE_CONTENT,
+            "LFS-tracked file must be smudged to real content after checkout"
+        );
+    }
+
+    #[test]
+    fn checkout_detached_smudges_lfs_files() {
+        let Some((_tmp, work)) = lfs_fixture() else {
+            return;
+        };
+
+        let remote_tip =
+            crate::test_support::run_git_capture(&work, &["rev-parse", "origin/feature"]);
+        let repo = Repository::open(&work).unwrap();
+        repo.checkout_detached(remote_tip.trim()).unwrap();
+
+        let content = fs::read_to_string(work.join("asset.bin")).unwrap();
+        assert_eq!(content, crate::test_support::LFS_FEATURE_CONTENT);
     }
 
     #[test]
