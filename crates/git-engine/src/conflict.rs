@@ -162,19 +162,23 @@ impl Repository {
 
     /// Write resolved content to disk and mark the file as resolved in the index.
     ///
-    /// Overwrites the working-directory file at `path` with `content`, stages
-    /// the result, removes conflict entries from the index, and writes the
-    /// index back to disk.
+    /// Overwrites the working-directory file at `path` with `content`, then
+    /// stages it with `git add`. Staging through the CLI (rather than
+    /// libgit2's `index.add_path`) runs the repo's configured clean filters,
+    /// so a git-lfs-tracked conflict resolution stages the pointer rather
+    /// than the resolved bytes — and `git add` on a conflicted path clears
+    /// the stage 1/2/3 entries, which is what resolves the conflict.
     #[instrument(skip(self, content), fields(path = %path))]
     pub fn write_resolved_file(&self, path: &str, content: &str) -> Result<(), GitError> {
         let full_path = self.path().join(path);
         std::fs::write(&full_path, content)?;
 
-        let mut index = self.inner().index()?;
-        index.add_path(std::path::Path::new(path))?;
-        index.conflict_remove(std::path::Path::new(path))?;
-        index.write()?;
-        Ok(())
+        let result = self.git_cmd(&["add", "--", path])?;
+        if result.success {
+            Ok(())
+        } else {
+            Err(GitError::CliError(result.stderr))
+        }
     }
 
     // -----------------------------------------------------------------
