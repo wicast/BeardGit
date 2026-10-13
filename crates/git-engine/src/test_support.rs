@@ -593,7 +593,7 @@ pub fn create_repo_with_diverged_branches() -> (TempDir, PathBuf) {
 }
 
 /// Helper: shell out to `git` in `repo_path` and panic on failure.
-fn run_git(repo_path: &Path, args: &[&str]) {
+pub fn run_git(repo_path: &Path, args: &[&str]) {
     let status = std::process::Command::new("git")
         .args(args)
         .current_dir(repo_path)
@@ -602,6 +602,121 @@ fn run_git(repo_path: &Path, args: &[&str]) {
     if !status.success() {
         panic!("git {args:?} failed with status {status:?}");
     }
+}
+
+/// Helper: shell out to `git` in `repo_path` and return its stdout,
+/// panicking on failure. For read-only queries in tests (`rev-parse`,
+/// `cat-file`, …).
+pub fn run_git_capture(repo_path: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo_path)
+        .output()
+        .expect("spawn git");
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// True when `git lfs` is usable in this environment.
+///
+/// The LFS fixtures and the tests built on them skip when it is not — a
+/// developer machine without git-lfs should still be able to run the rest
+/// of the suite.
+pub fn git_lfs_available() -> bool {
+    std::process::Command::new("git")
+        .args(["lfs", "version"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Smudged content of `asset.bin` on the `master` branch of the LFS fixture.
+pub const LFS_MAIN_CONTENT: &str = "REAL-MAIN-CONTENT";
+/// Smudged content of `asset.bin` on the `feature` branch of the LFS fixture.
+pub const LFS_FEATURE_CONTENT: &str = "REAL-FEATURE-CONTENT";
+
+/// The `filter.lfs.*` config `git lfs install` writes, applied per-repo so
+/// the fixture never touches the machine's global git config.
+const LFS_FILTER_CONFIG: [(&str, &str); 4] = [
+    ("filter.lfs.clean", "git-lfs clean -- %f"),
+    ("filter.lfs.smudge", "git-lfs smudge -- %f"),
+    ("filter.lfs.process", "git-lfs filter-process"),
+    ("filter.lfs.required", "true"),
+];
+
+/// Build a git-lfs repository pair for filter round-trip tests: an `origin`
+/// repo whose `master` and `feature` branches both track `*.bin` through LFS,
+/// plus a `work` clone that has already fetched `feature`.
+///
+/// Invariant on return: `work` is on `master` with `asset.bin` smudged to
+/// [`LFS_MAIN_CONTENT`] (master's LFS object is local); `feature`'s LFS
+/// object is *not* local yet, so checking it out must run the smudge filter
+/// — downloading on demand from the local remote — to materialize the file.
+/// `origin/feature` resolves in `work` after the fetch.
+///
+/// Returns `None` (and tests should skip) when git-lfs is unavailable.
+pub fn create_lfs_repo_with_fetched_branch() -> Option<(TempDir, PathBuf)> {
+    if !git_lfs_available() {
+        return None;
+    }
+    let dir = TempDir::new().ok()?;
+    let root = dir.path();
+
+    // Origin: master with asset.bin, then feature with a different asset.bin.
+    let origin = root.join("origin");
+    std::fs::create_dir(&origin).ok()?;
+    run_git(&origin, &["init", "-q", "--initial-branch=master"]);
+    run_git(&origin, &["config", "user.email", "test@example.com"]);
+    run_git(&origin, &["config", "user.name", "Test User"]);
+    run_git(&origin, &["config", "core.autocrlf", "false"]);
+    for (key, value) in LFS_FILTER_CONFIG {
+        run_git(&origin, &["config", key, value]);
+    }
+    std::fs::write(
+        origin.join(".gitattributes"),
+        "*.bin filter=lfs diff=lfs merge=lfs -text\n",
+    )
+    .ok()?;
+    std::fs::write(origin.join("asset.bin"), LFS_MAIN_CONTENT).ok()?;
+    run_git(&origin, &["add", "."]);
+    run_git(&origin, &["commit", "-qm", "main"]);
+    run_git(&origin, &["checkout", "-qb", "feature"]);
+    std::fs::write(origin.join("asset.bin"), LFS_FEATURE_CONTENT).ok()?;
+    run_git(&origin, &["add", "asset.bin"]);
+    run_git(&origin, &["commit", "-qm", "feature"]);
+    run_git(&origin, &["checkout", "-q", "master"]);
+
+    // Clone like a user would (CLI), then configure the filters locally —
+    // `git clone` does not copy the source repo's config — and materialize
+    // master's LFS files. The clone's initial checkout lands as pointers.
+    let work = root.join("work");
+    let work_str = work.to_str()?;
+    let origin_str = origin.to_str()?;
+    run_git(root, &["clone", "-q", origin_str, work_str]);
+    run_git(&work, &["config", "user.email", "test@example.com"]);
+    run_git(&work, &["config", "user.name", "Test User"]);
+    run_git(&work, &["config", "core.autocrlf", "false"]);
+    for (key, value) in LFS_FILTER_CONFIG {
+        run_git(&work, &["config", key, value]);
+    }
+    run_git(&work, &["checkout", "-q", "master"]);
+    run_git(&work, &["lfs", "pull"]);
+
+    // What BeardGit's fetch_remote spawns. Only git objects come down —
+    // feature's LFS object stays on the remote until something smudges it.
+    run_git(&work, &["fetch", "-q", "origin"]);
+
+    assert_eq!(
+        std::fs::read_to_string(work.join("asset.bin")).ok()?,
+        LFS_MAIN_CONTENT,
+        "fixture precondition: work tree smudged on master"
+    );
+
+    Some((dir, work))
 }
 
 #[cfg(test)]
