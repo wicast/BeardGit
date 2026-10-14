@@ -196,6 +196,7 @@ impl From<git_engine::GitError> for IpcError {
             G::NotFullyMerged(_) => "not_fully_merged",
             G::BranchAlreadyExists(_) => "branch_exists",
             G::DiscardFailed { .. } => "discard_failed",
+            G::FilteredPath { .. } => "filtered_path",
         };
         Self::new(code, err.to_string())
     }
@@ -287,6 +288,14 @@ mod tests {
         assert_eq!(
             IpcError::from(git_engine::GitError::FileTooLarge { size: 10 }).code,
             "file_too_large",
+        );
+        assert_eq!(
+            IpcError::from(git_engine::GitError::FilteredPath {
+                path: "a.psd".into(),
+                filter: "lfs".into(),
+            })
+            .code,
+            "filtered_path",
         );
     }
 

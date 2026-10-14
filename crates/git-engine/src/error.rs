@@ -80,4 +80,20 @@ pub enum GitError {
         /// Repo-relative paths that could not be deleted.
         paths: Vec<String>,
     },
+    /// A hunk- or line-level staging/discard was requested for a path that
+    /// carries a `filter` attribute (`*.psd filter=lfs` and friends). The
+    /// partial-staging patch is built from libgit2's *unfiltered* diff —
+    /// raw working-tree bytes on the new side — and `git apply --cached`
+    /// does not run the clean filter, so applying it would store raw bytes
+    /// (or a pointer/raw hybrid) in the index instead of what the filter
+    /// produces. Stage or discard the whole file instead.
+    #[error(
+        "'{path}' is tracked by the '{filter}' filter — stage or discard the whole file instead"
+    )]
+    FilteredPath {
+        /// Repo-relative path of the filtered file.
+        path: String,
+        /// The `filter` attribute's value (e.g. `lfs`).
+        filter: String,
+    },
 }

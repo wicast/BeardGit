@@ -3,6 +3,11 @@
 //! Extends [`Repository`] with methods that build unified diff patches from
 //! user-selected hunks or individual lines and apply them via `git apply`.
 //! This enables partial staging instead of whole-file operations.
+//!
+//! Partial staging is refused for paths carrying a `filter` attribute
+//! (git-lfs and friends): the patch is built from libgit2's *unfiltered*
+//! diff, so applying it would store raw bytes in the index. See
+//! [`GitError::FilteredPath`].
 
 use serde::Deserialize;
 use std::io::Write;
@@ -72,12 +77,20 @@ impl Repository {
     ///
     /// `context_lines` must be the value the displayed diff was fetched
     /// with — see [`Repository::diff_for_selection`].
+    ///
+    /// Refuses paths that carry a `filter` attribute (git-lfs and friends)
+    /// with [`GitError::FilteredPath`]: the patch is built from libgit2's
+    /// unfiltered diff and `git apply --cached` does not run the clean
+    /// filter, so applying it would store raw bytes — or a pointer/raw
+    /// hybrid — in the index instead of the pointer the filter produces.
+    /// Stage the whole file instead.
     pub fn stage_hunks(
         &self,
         path: &str,
         selections: &[HunkSelection],
         context_lines: Option<u32>,
     ) -> Result<(), GitError> {
+        self.ensure_unfiltered_path(path)?;
         let file_diff = self.diff_for_selection(path, false, context_lines)?;
         let patch = build_patch(path, &file_diff, selections, ApplyDirection::Forward)?;
         self.apply_patch(&patch, &["--cached"])
@@ -85,6 +98,10 @@ impl Repository {
 
     /// Unstage selected hunks/lines from the index. See
     /// [`Repository::stage_hunks`] for `context_lines`.
+    ///
+    /// No filter check: both sides of this patch come from git objects
+    /// (the index's blob and HEAD's blob), which already hold filtered
+    /// content, so the reverse apply cannot smuggle raw bytes in.
     pub fn unstage_hunks(
         &self,
         path: &str,
@@ -98,15 +115,57 @@ impl Repository {
 
     /// Discard selected hunks/lines from the working directory. See
     /// [`Repository::stage_hunks`] for `context_lines`.
+    ///
+    /// Refuses filtered paths with [`GitError::FilteredPath`] for the same
+    /// reason as [`Repository::stage_hunks`] — the reverse apply would
+    /// write the patch's old side (pointer text) over the working file.
     pub fn discard_hunks(
         &self,
         path: &str,
         selections: &[HunkSelection],
         context_lines: Option<u32>,
     ) -> Result<(), GitError> {
+        self.ensure_unfiltered_path(path)?;
         let file_diff = self.diff_for_selection(path, false, context_lines)?;
         let patch = build_patch(path, &file_diff, selections, ApplyDirection::Reverse)?;
         self.apply_patch(&patch, &["--reverse"])
+    }
+
+    /// Return the `filter` attribute configured for `path` in the repo's
+    /// gitattributes (worktree, index and HEAD copies, `info/attributes`,
+    /// and `core.attributesFile`), or `None` when it is `unset` /
+    /// `unspecified`.
+    ///
+    /// Uses the git CLI rather than libgit2's attribute API so it sees
+    /// exactly what git itself would apply.
+    fn path_filter_attribute(&self, path: &str) -> Result<Option<String>, GitError> {
+        let result = self.git_cmd(&["check-attr", "filter", "--", path])?;
+        if !result.success {
+            return Err(GitError::CliError(result.stderr));
+        }
+        // `git check-attr filter -- <path>` prints "<path>: filter: <value>"
+        // per queried path. `unset`/`unspecified` mean no filter; anything
+        // else is the filter's name (e.g. `lfs`).
+        Ok(result.stdout.lines().find_map(|line| {
+            let (_, value) = line.rsplit_once(": filter: ")?;
+            let value = value.trim();
+            match value {
+                "" | "unset" | "unspecified" => None,
+                name => Some(name.to_string()),
+            }
+        }))
+    }
+
+    /// Refuse a hunk-level operation on a path whose content passes
+    /// through a configured filter. See [`GitError::FilteredPath`].
+    fn ensure_unfiltered_path(&self, path: &str) -> Result<(), GitError> {
+        if let Some(filter) = self.path_filter_attribute(path)? {
+            return Err(GitError::FilteredPath {
+                path: path.to_string(),
+                filter,
+            });
+        }
+        Ok(())
     }
 
     /// Apply a unified diff patch via `git apply`.
@@ -1438,6 +1497,86 @@ mod tests {
         assert!(
             index_diffs.iter().any(|d| d.path == "f.txt"),
             "the change should now be staged"
+        );
+    }
+
+    // ── Filtered (git-lfs) paths ────────────────────────────────────────
+    //
+    // The patch is built from libgit2's unfiltered diff and
+    // `git apply --cached` does not run the clean filter, so a partial
+    // stage of an LFS-tracked file would store raw bytes — or a
+    // pointer/raw hybrid — in the index. The entry points refuse instead.
+    // Skips when git-lfs is not installed.
+
+    #[test]
+    fn stage_and_discard_hunks_refuse_lfs_tracked_files() {
+        let Some((_tmp, work)) = crate::test_support::create_lfs_repo_with_fetched_branch() else {
+            return;
+        };
+        crate::test_support::run_git(&work, &["checkout", "-q", "feature"]);
+        let repo = Repository::open(&work).unwrap();
+
+        // An edit, so a hunk selection would otherwise exist and apply.
+        fs::write(work.join("asset.bin"), "EDITED-RAW-CONTENT").unwrap();
+
+        let whole_file = vec![HunkSelection {
+            hunk_index: 0,
+            line_ranges: None,
+        }];
+
+        let err = repo
+            .stage_hunks("asset.bin", &whole_file, None)
+            .expect_err("staging hunks of an LFS file must be refused");
+        assert!(
+            matches!(&err, GitError::FilteredPath { filter, .. } if filter == "lfs"),
+            "expected FilteredPath(lfs), got {err:?}"
+        );
+
+        let err = repo
+            .discard_hunks("asset.bin", &whole_file, None)
+            .expect_err("discarding hunks of an LFS file must be refused");
+        assert!(
+            matches!(&err, GitError::FilteredPath { filter, .. } if filter == "lfs"),
+            "expected FilteredPath(lfs), got {err:?}"
+        );
+
+        // The index must be untouched — no pointer/raw hybrid blob.
+        let blob = crate::test_support::run_git_capture(&work, &["cat-file", "-p", ":asset.bin"]);
+        assert!(
+            blob.starts_with("version https://git-lfs.github.com/spec/v1"),
+            "index must still hold the committed pointer, got: {blob:?}"
+        );
+        assert!(
+            !blob.contains("EDITED-RAW-CONTENT"),
+            "index must not contain raw edited bytes, got: {blob:?}"
+        );
+    }
+
+    #[test]
+    fn unstage_hunks_still_works_for_lfs_tracked_files() {
+        // Both sides of the unstage patch are git objects (index blob and
+        // HEAD blob), which already hold filtered content — no refusal, no
+        // corruption. Stage the whole file through the CLI first so the
+        // index holds a real pointer.
+        let Some((_tmp, work)) = crate::test_support::create_lfs_repo_with_fetched_branch() else {
+            return;
+        };
+        crate::test_support::run_git(&work, &["checkout", "-q", "feature"]);
+        let repo = Repository::open(&work).unwrap();
+        fs::write(work.join("asset.bin"), "EDITED-RAW-CONTENT").unwrap();
+        repo.stage_files(&["asset.bin".to_string()]).unwrap();
+
+        let whole_file = vec![HunkSelection {
+            hunk_index: 0,
+            line_ranges: None,
+        }];
+        repo.unstage_hunks("asset.bin", &whole_file, None)
+            .expect("unstaging hunks of an LFS file must stay available");
+
+        let blob = crate::test_support::run_git_capture(&work, &["cat-file", "-p", ":asset.bin"]);
+        assert!(
+            blob.starts_with("version https://git-lfs.github.com/spec/v1"),
+            "index must hold HEAD's pointer after unstage, got: {blob:?}"
         );
     }
 }
