@@ -105,6 +105,11 @@ export function firstErrorLine(e: unknown): string {
  *   know what is still on disk:
  *   @unmapped discard_failed
  *
+ * - Refusals whose message names the file, the filter it goes through, and
+ *   the next step — a fixed sentence would drop the path the user is
+ *   looking at when they click stage:
+ *   @unmapped filtered_path
+ *
  * Kept as an alias for a code Rust no longer emits:
  * @legacy-code repo_not_found
  */
