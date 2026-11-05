@@ -480,7 +480,10 @@ async function activateProjectTab(tabIndex: number) {
     // rebuild fail and leaves the canvas blank.
     const headBranch =
       info.head_branch && info.head_branch !== "HEAD" ? info.head_branch : undefined;
-    graphViewOptions.update((o) => ({ ...o, branch: headBranch }));
+    graphViewOptions.update((o) => ({
+      ...o,
+      branches: headBranch ? [headBranch] : [],
+    }));
     void reloadGraph().catch((err) => {
       console.error("Failed to reload graph after project switch", err);
       addToast({

@@ -55,10 +55,12 @@ export interface GraphViewOptions {
   /** Follow only the first parent of each commit — merges collapse onto the
    *  mainline and commits reachable solely through second parents disappear. */
   firstParent?: boolean;
-  /** Show only the history reachable from this branch tip (local `main` or
-   *  remote `origin/main`) instead of all refs. Composes with `firstParent`
-   *  for a clean single-branch mainline view. */
-  branch?: string;
+  /** Show only the history reachable from these branch tips (local `main`,
+   *  remote `origin/main`, …) instead of all refs. One entry is a clean
+   *  single-branch mainline view (composes with `firstParent`); several
+   *  entries produce the union of their reachable sets, which is what the
+   *  dropdown's right-click multi-select builds. Empty/omitted = all refs. */
+  branches?: string[];
   /** Lane ceiling override, clamped server-side to 4..=16 (default 8).
    *  Wide windows can request more parallel lanes before lanes recycle. */
   maxLanes?: number;

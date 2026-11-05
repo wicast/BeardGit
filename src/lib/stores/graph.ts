@@ -137,6 +137,21 @@ const VIEWPORT_SIZE = 300;
 export const graphViewOptions = writable<GraphViewOptions>({});
 
 /**
+ * Order-independent comparison of two branch selections.
+ *
+ * The backend canonicalises the list (sort + dedupe) before it decides
+ * whether its cached layout still matches, so `[a, b]` and `[b, a]` describe
+ * the same graph. This mirrors that: without it, right-clicking branches in
+ * a different order would look like a structural change and throw away the
+ * user's scroll position for a view that is in fact identical.
+ */
+function sameBranches(a: string[] | undefined, b: string[] | undefined): boolean {
+  const left = [...new Set(a ?? [])].sort();
+  const right = [...new Set(b ?? [])].sort();
+  return left.length === right.length && left.every((v, i) => v === right[i]);
+}
+
+/**
  * Update the view mode and reload. A structural change (first-parent
  * toggle or branch scope) invalidates the per-project viewport cache,
  * drops the selection — the selected commit may not exist in the new
@@ -151,7 +166,7 @@ export async function setGraphViewOptions(
   const next = { ...current, ...patch };
   const structuralChange =
     (next.firstParent ?? false) !== (current.firstParent ?? false) ||
-    (next.branch ?? null) !== (current.branch ?? null);
+    !sameBranches(next.branches, current.branches);
   const laneChange = (next.maxLanes ?? null) !== (current.maxLanes ?? null);
   if (!structuralChange && !laneChange) return;
 
@@ -168,6 +183,56 @@ export async function loadViewport(offset: number) {
   graphOffset.set(offset);
   const vp = await apiGetGraphViewport(offset, VIEWPORT_SIZE, get(graphViewOptions));
   viewport.set(vp);
+}
+
+/**
+ * Follow a HEAD move with the graph's branch scope.
+ *
+ * The graph defaults to scoping itself to the current branch, so when the
+ * user checks out a different branch in the Branches view the graph must
+ * follow — otherwise the graph keeps showing the old branch's mainline
+ * while the rest of the UI (title bar, sidebar, status bar) has already
+ * moved, which reads as a stale view.
+ *
+ * "Was the scope tracking HEAD?" is decided by comparing the scope against
+ * `previousHead`: the scope auto-follows only while it *is* the branch we
+ * were on. Once the user picks something else explicitly — a different
+ * branch, or the all-branches view — their choice wins and a later checkout
+ * leaves it alone. That keeps the auto-follow from yanking the view away
+ * from a deliberate choice, while still making the common case (scope was
+ * never touched) track HEAD for free.
+ *
+ * Returns `true` when the scope changed, i.e. when the caller must NOT run
+ * its own graph reload: `setGraphViewOptions` already reloaded from the top
+ * as part of the structural change.
+ */
+export async function syncGraphScopeWithHead(
+  previousHead: string | null | undefined,
+  nextHead: string | null | undefined,
+): Promise<boolean> {
+  // A literal "HEAD" is what older backends report for a detached HEAD, and
+  // `refs/heads/HEAD` is not a resolvable tip — scoping to it would make the
+  // viewport rebuild fail and blank the canvas.
+  const norm = (h: string | null | undefined): string | undefined =>
+    h && h !== "HEAD" ? h : undefined;
+
+  const prev = norm(previousHead);
+  const next = norm(nextHead);
+  const scope = get(graphViewOptions).branches ?? [];
+
+  // Tracking HEAD exactly: a single-branch scope equal to the branch we
+  // just left. The all-branches scope ([]) is an explicit choice, and a
+  // multi-branch selection is likewise deliberate — neither follows.
+  const wasTrackingHead = scope.length === 1 && scope[0] === prev;
+  if (!wasTrackingHead) return false;
+
+  const desired = next ? [next] : [];
+  if (scope.length === desired.length && scope.every((b, i) => b === desired[i])) {
+    return false;
+  }
+
+  await setGraphViewOptions({ branches: desired });
+  return true;
 }
 
 /** Re-fetch the current viewport window. Used after mutations that change refs. */
@@ -412,7 +477,10 @@ export function clearGraphState() {
  * all branches.
  */
 export function resetGraphViewScope(headBranch?: string | null) {
-  graphViewOptions.update((o) => ({ ...o, branch: headBranch ?? undefined }));
+  graphViewOptions.update((o) => ({
+    ...o,
+    branches: headBranch ? [headBranch] : [],
+  }));
 }
 
 /** Full reset including viewport (used when no cache is available). */

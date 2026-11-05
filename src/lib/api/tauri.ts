@@ -34,13 +34,26 @@ export async function getRepoInfo(): Promise<RepoInfo> {
   return invoke<RepoInfo>("get_repo_info");
 }
 
+/**
+ * Normalise a branch selection for the wire.
+ *
+ * An empty array and an omitted field mean the same thing ("all refs"), and
+ * both reach Rust as an empty `Vec`. Sending `null` instead of `[]` keeps the
+ * payload byte-identical to the pre-multi-branch shape for the most common
+ * view, so the all-branches default doesn't change the wire format at all.
+ */
+function branchParam(options?: GraphViewOptions): string[] | null {
+  const branches = options?.branches;
+  return branches && branches.length > 0 ? branches : null;
+}
+
 export async function getGraphViewport(
   offset: number, limit: number, options?: GraphViewOptions
 ): Promise<GraphViewport> {
   return invoke<GraphViewport>("get_graph_viewport", {
     offset, limit,
     firstParent: options?.firstParent ?? null,
-    branch: options?.branch ?? null,
+    branches: branchParam(options),
     maxLanes: options?.maxLanes ?? null,
   });
 }
@@ -64,7 +77,7 @@ export async function loadGraphChunk(
   return invoke<GraphViewport>("load_graph_chunk", {
     offset, limit,
     firstParent: options?.firstParent ?? null,
-    branch: options?.branch ?? null,
+    branches: branchParam(options),
     maxLanes: options?.maxLanes ?? null,
     anchor: anchor ?? null,
   });

@@ -55,9 +55,41 @@
       .filter((b) => !b.is_remote)
       .sort((a, b) => Number(b.is_head) - Number(a.is_head) || a.name.localeCompare(b.name)),
   );
+  /** Branches currently scoped into the graph. Empty = all refs. */
+  let scopeSelection = $derived($graphViewOptions.branches ?? []);
+  /** Trigger label: "All branches" / a lone branch / a count of branches. */
+  let scopeLabel = $derived(
+    scopeSelection.length === 0
+      ? m.graph_all_branches()
+      : scopeSelection.length === 1
+        ? scopeSelection[0]
+        : m.graph_branches_selected({ count: scopeSelection.length }),
+  );
+  function isScoped(name: string): boolean {
+    return scopeSelection.includes(name);
+  }
+  /** Left-click: scope the graph to exactly this one branch. */
   async function pickBranchScope(name: string | undefined) {
     showBranchMenu = false;
-    await setGraphViewOptions({ branch: name });
+    await setGraphViewOptions({ branches: name ? [name] : [] });
+  }
+  /**
+   * Right-click: add/remove this branch from the selection, keeping the menu
+   * open so several can be toggled in a row. Right-clicking the last selected
+   * branch falls back to the all-branches view (an empty selection *is* that
+   * view), so there is always a visible way back out.
+   */
+  async function toggleBranchScope(name: string) {
+    const next = isScoped(name)
+      ? scopeSelection.filter((b) => b !== name)
+      : [...scopeSelection, name];
+    await setGraphViewOptions({ branches: next });
+  }
+  /** Suppress the native menu so a right-click reads as a multi-select toggle. */
+  function onBranchContextMenu(e: MouseEvent, name: string) {
+    e.preventDefault();
+    e.stopPropagation();
+    void toggleBranchScope(name);
   }
   let columnToggleEl: HTMLDivElement | undefined = $state();
 
@@ -1039,26 +1071,30 @@
         <Button
           variant="neutral"
           size="sm"
-          active={showBranchMenu || Boolean($graphViewOptions.branch)}
+          active={showBranchMenu || scopeSelection.length > 0}
+          description={m.graph_branch_scope_tooltip()}
           ariaHaspopup="menu"
           ariaExpanded={showBranchMenu}
           onclick={() => (showBranchMenu = !showBranchMenu)}
-        >{$graphViewOptions.branch ?? m.graph_all_branches()}</Button>
+        >{scopeLabel}</Button>
         {#if showBranchMenu}
           <div class="column-dropdown branch-dropdown" role="menu">
+            <div class="branch-dropdown-hint">{m.graph_branch_multiselect_hint()}</div>
             <button
               type="button"
               class="branch-option"
-              class:selected={!$graphViewOptions.branch}
+              class:selected={scopeSelection.length === 0}
               onclick={() => void pickBranchScope(undefined)}
             >{m.graph_all_branches()}</button>
             {#each scopeBranches as b (b.name)}
               <button
                 type="button"
                 class="branch-option"
-                class:selected={$graphViewOptions.branch === b.name}
+                class:selected={isScoped(b.name)}
                 class:current={b.is_head}
+                aria-pressed={isScoped(b.name)}
                 onclick={() => void pickBranchScope(b.name)}
+                oncontextmenu={(e) => onBranchContextMenu(e, b.name)}
               >{b.name}</button>
             {/each}
           </div>
@@ -1201,6 +1237,21 @@
     max-height: 320px;
     overflow-y: auto;
     min-width: 180px;
+  }
+
+  /* Explains the two gestures before the user has to discover them. Sits
+   * above the list as a sticky header so it stays put while the branch
+   * list scrolls underneath it. */
+  .branch-dropdown-hint {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    padding: 4px 10px 6px;
+    margin-bottom: 2px;
+    font-size: var(--font-size-2xs);
+    color: var(--text-secondary);
+    background: var(--bg-toolbar);
+    border-bottom: 1px solid var(--border);
   }
 
   .branch-option {

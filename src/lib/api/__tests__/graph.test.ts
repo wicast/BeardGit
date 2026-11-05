@@ -25,35 +25,75 @@ describe("graph wrappers", () => {
       offset: 0,
       limit: 50,
       firstParent: null,
-      branch: null,
+      branches: null,
       maxLanes: null,
     });
   });
 
-  it("getGraphViewport forwards firstParent, branch and maxLanes", async () => {
+  it("getGraphViewport forwards firstParent, branches and maxLanes", async () => {
     mocks.invoke.mockResolvedValue({ nodes: [] });
-    await getGraphViewport(10, 20, { firstParent: true, branch: "main", maxLanes: 12 });
+    await getGraphViewport(10, 20, { firstParent: true, branches: ["main"], maxLanes: 12 });
     expect(mocks.invoke).toHaveBeenCalledWith("get_graph_viewport", {
       offset: 10,
       limit: 20,
       firstParent: true,
-      branch: "main",
+      branches: ["main"],
       maxLanes: 12,
+    });
+  });
+
+  it("getGraphViewport forwards a multi-branch selection", async () => {
+    mocks.invoke.mockResolvedValue({ nodes: [] });
+    await getGraphViewport(0, 50, { branches: ["dev", "feature"] });
+    expect(mocks.invoke).toHaveBeenCalledWith("get_graph_viewport", {
+      offset: 0,
+      limit: 50,
+      firstParent: null,
+      branches: ["dev", "feature"],
+      maxLanes: null,
+    });
+  });
+
+  it("getGraphViewport sends an empty selection as null, not []", async () => {
+    // An empty array and an omitted field both mean "all refs"; normalising to
+    // null keeps the wire payload identical to the pre-multi-branch shape so
+    // the backend's `unwrap_or_default()` path is the only thing that differs.
+    mocks.invoke.mockResolvedValue({ nodes: [] });
+    await getGraphViewport(0, 50, { branches: [] });
+    expect(mocks.invoke).toHaveBeenCalledWith("get_graph_viewport", {
+      offset: 0,
+      limit: 50,
+      firstParent: null,
+      branches: null,
+      maxLanes: null,
     });
   });
 
   it("loadGraphChunk invokes 'load_graph_chunk' with mode params", async () => {
     mocks.invoke.mockResolvedValue({ nodes: [], has_more: true });
-    const out = await loadGraphChunk(100, 50, { firstParent: true, branch: "origin/dev" });
+    const out = await loadGraphChunk(100, 50, { firstParent: true, branches: ["origin/dev"] });
     expect(mocks.invoke).toHaveBeenCalledWith("load_graph_chunk", {
       offset: 100,
       limit: 50,
       firstParent: true,
-      branch: "origin/dev",
+      branches: ["origin/dev"],
       maxLanes: null,
       anchor: null,
     });
     expect(out).toEqual({ nodes: [], has_more: true });
+  });
+
+  it("loadGraphChunk forwards a multi-branch selection", async () => {
+    mocks.invoke.mockResolvedValue({ nodes: [], has_more: true });
+    await loadGraphChunk(0, 50, { branches: ["main", "dev"] });
+    expect(mocks.invoke).toHaveBeenCalledWith("load_graph_chunk", {
+      offset: 0,
+      limit: 50,
+      firstParent: null,
+      branches: ["main", "dev"],
+      maxLanes: null,
+      anchor: null,
+    });
   });
 
   it("loadGraphChunk forwards the anchor OID for sequential scrolls", async () => {
@@ -63,7 +103,7 @@ describe("graph wrappers", () => {
       offset: 300,
       limit: 50,
       firstParent: true,
-      branch: null,
+      branches: null,
       maxLanes: null,
       anchor: "deadbeef",
     });

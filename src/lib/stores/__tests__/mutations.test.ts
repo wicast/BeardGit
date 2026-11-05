@@ -12,6 +12,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 const {
   listenMock,
   refreshAndReloadGraph,
+  syncGraphScopeWithHead,
   refreshStatuses,
   refreshDiffs,
   refreshBranches,
@@ -22,23 +23,26 @@ const {
 } = vi.hoisted(() => ({
   listenMock: vi.fn(),
   refreshAndReloadGraph: vi.fn(),
+  // Defaults to "the scope did not follow HEAD", so the dispatcher falls
+  // through to `refreshAndReloadGraph` — the path these tests assert on.
+  syncGraphScopeWithHead: vi.fn(async () => false),
   refreshStatuses: vi.fn(),
   refreshDiffs: vi.fn(),
   refreshBranches: vi.fn(),
   refreshTags: vi.fn(),
   loadReflog: vi.fn(),
-  refreshRepoInfo: vi.fn(),
+  refreshRepoInfo: vi.fn(async () => {}),
   saveCurrentSnapshot: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("@tauri-apps/api/event", () => ({
   listen: listenMock,
 }));
-vi.mock("../graph", () => ({ refreshAndReloadGraph }));
+vi.mock("../graph", () => ({ refreshAndReloadGraph, syncGraphScopeWithHead }));
 vi.mock("../changes", () => ({ refreshStatuses, refreshDiffs }));
 vi.mock("../branches", () => ({ refreshBranches }));
 vi.mock("../tags", () => ({ refreshTags }));
 vi.mock("../reflog", () => ({ loadReflog }));
-vi.mock("../repo", () => ({ refreshRepoInfo }));
+vi.mock("../repo", () => ({ refreshRepoInfo, repoInfo }));
 vi.mock("../project-cache", () => ({ saveCurrentSnapshot }));
 
 // Activate project is the tab-switch gate. `vi.hoisted` dodges the
@@ -65,27 +69,65 @@ const { activeProject, refreshActiveTitleBar } = vi.hoisted(() => {
 });
 vi.mock("../projects", () => ({ activeProject, refreshActiveTitleBar }));
 
+// Minimal writable stand-in for `repoInfo`. The dispatcher reads
+// `head_branch` before and after refreshing it, to decide whether the graph's
+// branch scope was tracking HEAD. Lives in a `vi.hoisted` block so the
+// `vi.mock("../repo")` factory above can close over it without a TDZ error.
+const { repoInfo } = vi.hoisted(() => {
+  let value: { head_branch?: string | null } | null = { head_branch: "main" };
+  const subs = new Set<(v: unknown) => void>();
+  return {
+    repoInfo: {
+      subscribe(fn: (v: unknown) => void) {
+        fn(value);
+        subs.add(fn);
+        return () => subs.delete(fn);
+      },
+      set(v: { head_branch?: string | null } | null) {
+        value = v;
+        for (const fn of subs) fn(value);
+      },
+    },
+  };
+});
+
 import {
   startMutationListener,
   flushPendingForActiveProject,
   __resetForTests,
 } from "../mutations";
 
+/**
+ * Let the dispatcher's async graph path run to completion.
+ *
+ * The graph refresh is no longer a single synchronous call: it reads the old
+ * head, awaits the repoInfo refresh, then decides whether the branch scope
+ * followed HEAD before reloading. Tests asserting on those calls need the
+ * microtask queue drained first.
+ */
+async function flushAsync() {
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+}
+
 beforeEach(() => {
   __resetForTests();
   listenMock.mockReset();
   refreshAndReloadGraph.mockReset();
+  syncGraphScopeWithHead.mockReset();
+  syncGraphScopeWithHead.mockResolvedValue(false);
   refreshStatuses.mockReset();
   refreshDiffs.mockReset();
   refreshBranches.mockReset();
   refreshTags.mockReset();
   loadReflog.mockReset();
   refreshRepoInfo.mockReset();
+  refreshRepoInfo.mockResolvedValue(undefined);
   saveCurrentSnapshot.mockReset();
   saveCurrentSnapshot.mockResolvedValue(undefined);
   refreshActiveTitleBar.mockReset();
   refreshActiveTitleBar.mockResolvedValue(undefined);
   activeProject.set({ path: "/repo" });
+  repoInfo.set({ head_branch: "main" });
   globalThis.requestAnimationFrame = (cb: FrameRequestCallback) => {
     cb(0);
     return 0;
@@ -120,6 +162,8 @@ describe("startMutationListener", () => {
         },
       },
     });
+
+    await flushAsync();
 
     expect(refreshAndReloadGraph).toHaveBeenCalledTimes(1);
     expect(refreshStatuses).toHaveBeenCalledTimes(1);
@@ -187,12 +231,76 @@ describe("startMutationListener", () => {
       },
     });
 
+    await flushAsync();
+
     expect(refreshBranches).toHaveBeenCalledTimes(1);
     expect(refreshAndReloadGraph).toHaveBeenCalledTimes(1);
     expect(loadReflog).toHaveBeenCalledTimes(1);
     expect(refreshRepoInfo).toHaveBeenCalledTimes(1);
     // Tags only change on refs_changed, so a plain checkout must not refetch them.
     expect(refreshTags).not.toHaveBeenCalled();
+  });
+
+  it("skips the plain graph reload when the branch scope followed HEAD", async () => {
+    // The scope was pinned to the branch we just left, so following HEAD
+    // already reloaded the viewport from the top. Issuing a second reload
+    // would race two viewport fetches for one checkout.
+    syncGraphScopeWithHead.mockResolvedValueOnce(true);
+    let handler: ((ev: unknown) => void) | null = null;
+    listenMock.mockImplementation(async (_n, cb) => {
+      handler = cb as (ev: unknown) => void;
+      return () => {};
+    });
+    await startMutationListener();
+    handler!({
+      payload: {
+        project_path: "/repo",
+        kind: { type: "checkout" },
+        flags: {
+          refs_changed: false,
+          head_changed: true,
+          status_changed: false,
+          stashes_changed: false,
+          worktrees_changed: false,
+          remotes_changed: false,
+        },
+      },
+    });
+
+    await flushAsync();
+    expect(syncGraphScopeWithHead).toHaveBeenCalledTimes(1);
+    expect(refreshAndReloadGraph).not.toHaveBeenCalled();
+  });
+
+  it("passes the pre-refresh head to the scope sync", async () => {
+    // The sync has to see which branch we were ON before repoInfo is
+    // overwritten — that is the whole basis of "was tracking HEAD".
+    let handler: ((ev: unknown) => void) | null = null;
+    listenMock.mockImplementation(async (_n, cb) => {
+      handler = cb as (ev: unknown) => void;
+      return () => {};
+    });
+    refreshRepoInfo.mockImplementationOnce(async () => {
+      repoInfo.set({ head_branch: "dev" });
+    });
+    await startMutationListener();
+    handler!({
+      payload: {
+        project_path: "/repo",
+        kind: { type: "checkout" },
+        flags: {
+          refs_changed: false,
+          head_changed: true,
+          status_changed: false,
+          stashes_changed: false,
+          worktrees_changed: false,
+          remotes_changed: false,
+        },
+      },
+    });
+
+    await flushAsync();
+    expect(syncGraphScopeWithHead).toHaveBeenCalledWith("main", "dev");
   });
 
   it("buffers events for inactive projects", async () => {
@@ -223,6 +331,7 @@ describe("startMutationListener", () => {
 
     // Replay on switch.
     flushPendingForActiveProject("/repo");
+    await flushAsync();
     expect(refreshAndReloadGraph).toHaveBeenCalledTimes(1);
   });
 
@@ -272,6 +381,7 @@ describe("startMutationListener", () => {
       rafQueue.forEach((fn) => fn());
       rafQueue.length = 0;
 
+      await flushAsync();
       expect(refreshAndReloadGraph).toHaveBeenCalledTimes(1);
     } finally {
       globalThis.requestAnimationFrame = origRaf;
