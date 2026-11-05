@@ -11,7 +11,7 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { get } from "svelte/store";
 import { activeProject, refreshActiveTitleBar } from "./projects";
-import { refreshAndReloadGraph } from "./graph";
+import { refreshAndReloadGraph, syncGraphScopeWithHead } from "./graph";
 import { refreshStatuses, refreshDiffs } from "./changes";
 import { refreshStashes } from "./stashes";
 import { refreshWorktrees } from "./worktrees";
@@ -20,7 +20,7 @@ import { refreshRemotes } from "./remotes";
 import { refreshBranches } from "./branches";
 import { refreshTags } from "./tags";
 import { loadReflog } from "./reflog";
-import { refreshRepoInfo } from "./repo";
+import { refreshRepoInfo, repoInfo } from "./repo";
 import { refreshConflictStatus } from "./conflict";
 import { refreshSubmodules } from "./submodules";
 import { refreshFileEditorTree } from "./fileEditor";
@@ -75,6 +75,27 @@ function accumulate(path: string, flags: MutationFlags): void {
  * stash from terminal) that the watcher pipeline observes but the old
  * `repo-changed` listener used to refresh.
  */
+/**
+ * Refresh the graph after a HEAD move, letting the branch scope follow HEAD
+ * when it was tracking it.
+ *
+ * The graph is scoped to the current branch by default, so a checkout made in
+ * the Branches view has to move that scope too — reading `repoInfo` first
+ * gives us the branch we were on, which is what tells "the scope was
+ * following HEAD" apart from "the user picked this branch deliberately".
+ *
+ * When the scope does follow, `syncGraphScopeWithHead` has already reloaded
+ * the viewport from the top (a branch change is a structural change), so we
+ * skip the plain reload rather than issuing two viewports for one checkout.
+ */
+async function refreshGraphAfterHeadMove(): Promise<void> {
+  const previousHead = get(repoInfo)?.head_branch ?? null;
+  await refreshRepoInfo();
+  const nextHead = get(repoInfo)?.head_branch ?? null;
+  if (await syncGraphScopeWithHead(previousHead, nextHead)) return;
+  await refreshAndReloadGraph();
+}
+
 export function dispatchRefresh(flags: MutationFlags, path?: string): void {
   if (flags.head_changed || flags.refs_changed) {
     // HEAD moved (commit, checkout, reset, rebase, merge) OR refs changed
@@ -85,10 +106,12 @@ export function dispatchRefresh(flags: MutationFlags, path?: string): void {
     // an EXISTING branch flips ONLY head_changed — the symbolic HEAD has no
     // OID in the snapshot refs map — so gating these on refs_changed alone
     // left the sidebar highlighting the old branch and the graph HEAD stale.
-    void refreshAndReloadGraph();
+    // `refreshGraphAfterHeadMove` owns the repoInfo refresh here: it has to
+    // read the old head before overwriting it, so calling `refreshRepoInfo`
+    // again alongside it would only duplicate the IPC.
+    void refreshGraphAfterHeadMove();
     void refreshBranches();
     void loadReflog();
-    void refreshRepoInfo();
   }
   if (flags.refs_changed) {
     // refs/tags/** live in the snapshot refs map, so tag create/delete

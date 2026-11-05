@@ -38,10 +38,19 @@ pub struct GraphLayoutOptions {
     /// mainline and commits reachable solely through second parents are
     /// excluded from the walk.
     pub first_parent: bool,
-    /// Show only the history reachable from this branch tip (local `main` or
-    /// remote `origin/main`) instead of from every ref. Composes with
-    /// `first_parent` for a clean single-branch mainline view.
-    pub branch: Option<String>,
+    /// Show only the history reachable from these branch tips (local `main`,
+    /// remote `origin/main`, …) instead of from every ref. Composes with
+    /// `first_parent` for a clean single-branch mainline view; several
+    /// entries produce the union of their reachable sets (the graph view's
+    /// multi-branch filter). Empty means "all refs" — the default view.
+    ///
+    /// Always built through [`GraphLayoutOptions::new`], which sorts and
+    /// dedupes. That canonicalisation matters twice over: `PartialEq`
+    /// decides whether the slot's cached layout matches the request (so
+    /// `[a, b]` and `[b, a]` must compare equal), and `variant()` names the
+    /// on-disk cache file (so the two orders must not land in separate
+    /// files).
+    pub branches: Vec<String>,
     /// Lane ceiling override, already normalized via
     /// [`GraphLayoutOptions::normalize_max_lanes`]: clamped to
     /// `MIN_LANE_CEILING..=MAX_LANE_CEILING` and `None` when equal to
@@ -56,6 +65,28 @@ pub const MIN_LANE_CEILING: u8 = 4;
 pub const MAX_LANE_CEILING: u8 = 16;
 
 impl GraphLayoutOptions {
+    /// Canonicalise a layout request: sort + dedupe the branch selection so
+    /// equivalent selections compare and hash identically, and drop blank
+    /// names so an empty string can't masquerade as a branch.
+    pub fn new(
+        first_parent: bool,
+        branches: Vec<String>,
+        max_lanes: Option<u8>,
+    ) -> Self {
+        let mut branches: Vec<String> = branches
+            .into_iter()
+            .map(|b| b.trim().to_string())
+            .filter(|b| !b.is_empty())
+            .collect();
+        branches.sort();
+        branches.dedup();
+        Self {
+            first_parent,
+            branches,
+            max_lanes: Self::normalize_max_lanes(max_lanes),
+        }
+    }
+
     /// Stable discriminator string used in the persistent cache key and the
     /// per-variant cache file name. Empty for the default option set so
     /// pre-existing cache entries stay valid.
@@ -64,13 +95,35 @@ impl GraphLayoutOptions {
         if self.first_parent {
             parts.push("fp=1".to_string());
         }
-        if let Some(branch) = &self.branch {
-            parts.push(format!("branch={branch}"));
+        // A single branch keeps the legacy `branch=` spelling so cache files
+        // written before multi-branch support still resolve; two or more use
+        // `branches=` with a space-joined, already-sorted list. A space is
+        // the separator because `git check-ref-format` forbids spaces in ref
+        // names — a comma would not do, since `["a,b", "c"]` and
+        // `["a", "b,c"]` would collide on the same cache key.
+        match self.branches.as_slice() {
+            [] => {}
+            [one] => parts.push(format!("branch={one}")),
+            many => parts.push(format!("branches={}", many.join(" "))),
         }
         if let Some(lanes) = self.max_lanes {
             parts.push(format!("lanes={lanes}"));
         }
         parts.join(";")
+    }
+
+    /// Whether a layout built with these options is worth persisting to disk.
+    ///
+    /// Single-branch and default views map 1:1 onto a branch, so their cache
+    /// files are bounded by the branch count and are worth keeping across
+    /// restarts. Multi-branch views are combinatorial — a repo with 20
+    /// branches has ~1M possible selections — and the user reaches them by
+    /// transiently right-clicking, so persisting would fill the config dir
+    /// with entries nothing ever reads back. Those layouts are still cached
+    /// for the session in the `ProjectSlot`, so repeat scrolling is cheap;
+    /// only the cross-restart hit is given up.
+    fn is_cacheable(&self) -> bool {
+        self.branches.len() <= 1
     }
 
     /// Clamp a raw frontend-supplied lane ceiling into
@@ -92,7 +145,7 @@ impl GraphLayoutOptions {
     pub(crate) fn walk_options(&self) -> CommitWalkOptions<'_> {
         CommitWalkOptions {
             first_parent: self.first_parent,
-            branch: self.branch.as_deref(),
+            branches: &self.branches,
         }
     }
 }
@@ -318,6 +371,14 @@ pub(crate) fn load_or_build_layout(
 
     // Miss (or stale): compute and persist a fresh entry.
     let layout = build_fresh_layout(repo, options)?;
+
+    // Multi-branch selections are session-scoped (see `is_cacheable`), so
+    // skip the write — a combinatorial variant space would otherwise fill
+    // the config dir with entries nothing reads back. The in-memory
+    // `ProjectSlot` still serves them for the rest of the session.
+    if !options.is_cacheable() {
+        return Ok((layout, false));
+    }
 
     // Serialize the entry from a borrow — no `GraphLayout::clone`. The layout
     // (up to ~50 MB on a full 20K-commit window) is then moved into the return
@@ -710,15 +771,8 @@ mod tests {
             let git_repo = git2::Repository::open(&repo_path).unwrap();
             git_repo.head().unwrap().shorthand().unwrap().to_string()
         };
-        let scoped_opts = GraphLayoutOptions {
-            branch: Some(head_branch.clone()),
-            ..Default::default()
-        };
-        let clean_opts = GraphLayoutOptions {
-            first_parent: true,
-            branch: Some(head_branch),
-            ..Default::default()
-        };
+        let scoped_opts = GraphLayoutOptions::new(false, vec![head_branch.clone()], None);
+        let clean_opts = GraphLayoutOptions::new(true, vec![head_branch], None);
 
         let (scoped, hit1) =
             load_or_build_layout(&repo, path_str, tmp_cfg.path(), &scoped_opts).unwrap();
@@ -740,6 +794,69 @@ mod tests {
             load_or_build_layout(&repo, path_str, tmp_cfg.path(), &clean_opts).unwrap();
         assert!(hit3);
         assert!(hit4);
+    }
+
+    #[test]
+    fn multi_branch_selection_is_not_persisted_to_disk() {
+        // Multi-branch selections are combinatorial, so they're session-only:
+        // the layout is still computed and returned, but no cache file is
+        // written (and so a repeat request always rebuilds rather than hits).
+        let (_tmp_repo, repo_path) = git_engine::test_support::create_repo_with_branches(&["b0", "b1"]);
+        let repo = Repository::open(&repo_path).unwrap();
+        let tmp_cfg = tempfile::tempdir().unwrap();
+        let path_str = repo_path.to_str().unwrap();
+
+        let opts = GraphLayoutOptions::new(false, vec!["b0".into(), "b1".into()], None);
+        assert!(!opts.is_cacheable());
+        assert!(!opts.variant().is_empty());
+
+        let (first, hit1) =
+            load_or_build_layout(&repo, path_str, tmp_cfg.path(), &opts).unwrap();
+        assert!(!hit1);
+        assert!(!first.nodes.is_empty());
+
+        // Second call recomputes instead of hitting a persisted entry.
+        let (second, hit2) =
+            load_or_build_layout(&repo, path_str, tmp_cfg.path(), &opts).unwrap();
+        assert!(!hit2, "multi-branch layouts must not persist");
+        assert_eq!(first.nodes.len(), second.nodes.len());
+
+        // Nothing landed in the layouts/ dir for this repo.
+        let layouts_dir = tmp_cfg.path().join("layouts");
+        let written = std::fs::read_dir(&layouts_dir)
+            .map(|entries| entries.count())
+            .unwrap_or(0);
+        assert_eq!(written, 0, "no cache file should be written");
+    }
+
+    #[test]
+    fn variant_spelling_distinguishes_one_from_many_branches() {
+        // One branch keeps the legacy `branch=` key so pre-multi-branch cache
+        // files still resolve; two or more switch to `branches=`.
+        assert_eq!(
+            GraphLayoutOptions::new(false, vec!["main".into()], None).variant(),
+            "branch=main"
+        );
+        assert_eq!(
+            GraphLayoutOptions::new(false, vec!["a".into(), "b".into()], None).variant(),
+            "branches=a b"
+        );
+        assert_eq!(
+            GraphLayoutOptions::new(true, vec!["a".into(), "b".into()], None).variant(),
+            "fp=1;branches=a b"
+        );
+        // Canonicalised: order and duplicates don't change the key.
+        assert_eq!(
+            GraphLayoutOptions::new(false, vec!["b".into(), "a".into(), "a".into()], None)
+                .variant(),
+            "branches=a b"
+        );
+        // Blank entries are dropped rather than becoming an empty branch name.
+        assert_eq!(
+            GraphLayoutOptions::new(false, vec!["  ".into(), "a".into()], None).variant(),
+            "branch=a"
+        );
+        assert!(GraphLayoutOptions::default().variant().is_empty());
     }
 
     #[test]

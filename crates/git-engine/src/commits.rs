@@ -141,6 +141,8 @@ pub type SimpleAdvance = Option<(Vec<CommitInfo>, Vec<String>)>;
 ///
 /// `Default` reproduces the behaviour of [`Repository::walk_commits`]: all
 /// refs are pushed as starting points and every parent edge is followed.
+///
+/// `Copy` still holds: the branch list is behind a shared slice reference.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CommitWalkOptions<'a> {
     /// Follow only the first parent of each commit (like
@@ -149,12 +151,17 @@ pub struct CommitWalkOptions<'a> {
     /// [`CommitInfo::parents`] still lists *all* parents of a merge — edge
     /// simplification for graph rendering happens in `graph-builder`.
     pub first_parent: bool,
-    /// Walk only the history reachable from this branch tip instead of from
+    /// Walk only the history reachable from these branch tips instead of from
     /// every ref. Accepts local (`main`) and remote (`origin/main`) branch
-    /// names, resolved like [`Repository::branch_commits`]. Errors if the
-    /// branch does not exist. Composes with `first_parent` for a clean
-    /// "mainline of one branch" view.
-    pub branch: Option<&'a str>,
+    /// names, resolved like [`Repository::branch_commits`]. An empty slice
+    /// means "all refs" (the default full-graph view); one entry reproduces
+    /// the single-branch mainline view; several entries push one tip per
+    /// branch so the walk covers the union of their reachable sets — the
+    /// basis of the graph view's multi-branch filter.
+    ///
+    /// Errors if *any* named branch does not exist, so a stale selection
+    /// surfaces instead of silently rendering a partial graph.
+    pub branches: &'a [String],
 }
 
 impl Repository {
@@ -189,20 +196,7 @@ impl Repository {
             revwalk.simplify_first_parent()?;
         }
 
-        if let Some(branch) = options.branch {
-            // Branch-scoped: walk only from this branch's tip. Try local,
-            // then remote — same resolution as `branch_commits`.
-            let reference = repo
-                .find_reference(&format!("refs/heads/{branch}"))
-                .or_else(|_| repo.find_reference(&format!("refs/remotes/{branch}")))?;
-            let oid = reference
-                .target()
-                .or_else(|| reference.resolve().ok().and_then(|r| r.target()))
-                .ok_or_else(|| {
-                    GitError::Git(git2::Error::from_str("Symbolic ref without target"))
-                })?;
-            revwalk.push(oid)?;
-        } else {
+        if options.branches.is_empty() {
             // Push all heads, remotes, and tags as starting points.
             if let Ok(refs) = repo.references() {
                 for reference in refs.flatten() {
@@ -211,6 +205,25 @@ impl Repository {
                         let _ = revwalk.push(oid);
                     }
                 }
+            }
+        } else {
+            // Branch-scoped: walk only from the selected branch tips. Try
+            // local, then remote — same resolution as `branch_commits`.
+            // Several entries push several tips; libgit2's revwalk then
+            // yields the union of their reachable sets in one
+            // topological+time stream, which is exactly the multi-branch
+            // graph view.
+            for branch in options.branches {
+                let reference = repo
+                    .find_reference(&format!("refs/heads/{branch}"))
+                    .or_else(|_| repo.find_reference(&format!("refs/remotes/{branch}")))?;
+                let oid = reference
+                    .target()
+                    .or_else(|| reference.resolve().ok().and_then(|r| r.target()))
+                    .ok_or_else(|| {
+                        GitError::Git(git2::Error::from_str("Symbolic ref without target"))
+                    })?;
+                revwalk.push(oid)?;
             }
         }
 
@@ -236,7 +249,7 @@ impl Repository {
     /// re-enumerating the commits before it — the basis for O(limit) deep-scroll
     /// pagination.
     ///
-    /// `options.branch` is ignored (the anchor defines the tip); only
+    /// `options.branches` is ignored (the anchor defines the tip); only
     /// `options.first_parent` selects the strategy:
     ///
     /// - **first-parent (the anchored fast path's only eligible mode):** a
@@ -321,10 +334,11 @@ impl Repository {
     ///   the anchor, so a non-first-parent walk diverges even on a single-head
     ///   repo. First-parent simplification collapses the graph to one line, where
     ///   the tail is always the anchor's ancestry.
-    /// - **The walk must push a single tip.** A branch-scoped walk always pushes
-    ///   exactly one ref; an all-refs walk is single-tip only when every ref
-    ///   resolves to the same commit. With several tips, each contributes its own
-    ///   first-parent chain and sibling tips interleave into the tail.
+    /// - **The walk must push a single tip.** A branch-scoped walk pushes one
+    ///   ref per selected branch, so it is single-tip only when exactly one
+    ///   branch is selected; an all-refs walk is single-tip only when every
+    ///   ref resolves to the same commit. With several tips, each contributes
+    ///   its own first-parent chain and sibling tips interleave into the tail.
     ///
     /// Returns `Ok(false)` (→ use the offset walk) for every other shape. This is
     /// conservative: some non-linear histories happen to match, but only the
@@ -337,8 +351,14 @@ impl Repository {
         if !options.first_parent {
             return Ok(false);
         }
-        if options.branch.is_some() {
-            return Ok(true); // branch-scoped: exactly one tip is pushed
+        // Branch-scoped: exactly one selected branch pushes exactly one tip.
+        // Two or more push several tips, whose first-parent chains interleave
+        // into the tail — the anchored walk would then diverge from the offset
+        // walk, so the fast path must be declined.
+        match options.branches.len() {
+            1 => return Ok(true),
+            0 => {} // all-refs walk — fall through to the single-tip check
+            _ => return Ok(false),
         }
         // All-refs walk: single-tip only when every pushed ref target is the
         // same commit. Mirrors the push set of `walk_commits_with_options`
@@ -813,7 +833,7 @@ mod tests {
                 0,
                 100,
                 CommitWalkOptions {
-                    branch: Some(&head_branch),
+                    branches: std::slice::from_ref(&head_branch),
                     ..Default::default()
                 },
             )
@@ -827,13 +847,70 @@ mod tests {
                 0,
                 100,
                 CommitWalkOptions {
-                    branch: Some("side"),
+                    branches: &["side".to_string()],
                     ..Default::default()
                 },
             )
             .unwrap();
         assert_eq!(side_scoped.len(), 5);
         assert_eq!(side_scoped[0].summary, "side work");
+    }
+
+    #[test]
+    fn test_walk_commits_multi_branch_scoped_unions_reachable_sets() {
+        let (_dir, path) = crate::test_support::create_repo_with_merged_branch();
+
+        // Add a "side" branch ahead of the merge — reachable only from itself.
+        let head_branch = {
+            let git_repo = git2::Repository::open(&path).unwrap();
+            let sig = git2::Signature::now("Test User", "test@example.com").unwrap();
+            let head = git_repo
+                .find_commit(git_repo.head().unwrap().target().unwrap())
+                .unwrap();
+            let tree = head.tree().unwrap();
+            let side_oid = git_repo
+                .commit(None, &sig, &sig, "side work", &tree, &[&head])
+                .unwrap();
+            let side = git_repo.find_commit(side_oid).unwrap();
+            git_repo.branch("side", &side, false).unwrap();
+            git_repo.head().unwrap().shorthand().unwrap().to_string()
+        };
+
+        let repo = Repository::open(&path).unwrap();
+
+        // Both branches selected → the union of their reachable sets, i.e. the
+        // same 5 commits the all-refs walk yields for this repo.
+        let multi = repo
+            .walk_commits_with_options(
+                0,
+                100,
+                CommitWalkOptions {
+                    branches: &[head_branch.clone(), "side".to_string()],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(multi.len(), 5);
+        assert!(multi.iter().any(|c| c.summary == "side work"));
+        assert!(multi.iter().any(|c| c.summary == "feature work"));
+
+        // Order must not matter — the walk is a set union either way.
+        let reversed = repo
+            .walk_commits_with_options(
+                0,
+                100,
+                CommitWalkOptions {
+                    branches: &["side".to_string(), head_branch.clone()],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        fn sorted_summaries(cs: &[CommitInfo]) -> Vec<String> {
+            let mut v: Vec<String> = cs.iter().map(|c| c.summary.clone()).collect();
+            v.sort();
+            v
+        }
+        assert_eq!(sorted_summaries(&multi), sorted_summaries(&reversed));
     }
 
     #[test]
@@ -851,7 +928,7 @@ mod tests {
                 100,
                 CommitWalkOptions {
                     first_parent: true,
-                    branch: Some(&head_branch),
+                    branches: std::slice::from_ref(&head_branch),
                 },
             )
             .unwrap();
@@ -867,7 +944,7 @@ mod tests {
             0,
             100,
             CommitWalkOptions {
-                branch: Some("does-not-exist"),
+                branches: &["does-not-exist".to_string()],
                 ..Default::default()
             },
         );
@@ -1229,7 +1306,7 @@ mod tests {
             &repo,
             CommitWalkOptions {
                 first_parent: true,
-                branch: Some(&head_branch),
+                branches: std::slice::from_ref(&head_branch),
             },
             50,
         );
@@ -1318,9 +1395,20 @@ mod tests {
         assert!(
             repo.supports_anchored_pagination(CommitWalkOptions {
                 first_parent: true,
-                branch: Some("b0"),
+                branches: &["b0".to_string()],
             })
             .unwrap()
+        );
+        // Scoping to two branches pushes two tips, whose first-parent chains
+        // interleave into the tail → the fast path must be declined, or deep
+        // scroll would silently return the wrong window.
+        assert!(
+            !repo
+                .supports_anchored_pagination(CommitWalkOptions {
+                    first_parent: true,
+                    branches: &["b0".to_string(), "b1".to_string()],
+                })
+                .unwrap()
         );
     }
 

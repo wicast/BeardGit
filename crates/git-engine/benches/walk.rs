@@ -64,7 +64,7 @@ fn bench_anchored_vs_offset(c: &mut Criterion) {
         .unwrap_or_else(|| "main".to_string());
     let opts = CommitWalkOptions {
         first_parent: true,
-        branch: Some(&head_branch),
+        branches: std::slice::from_ref(&head_branch),
     };
     assert!(
         repo.supports_anchored_pagination(opts).unwrap_or(false),

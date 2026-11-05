@@ -31,9 +31,10 @@ enum SlotProbe {
 /// - `limit`        – Maximum number of rows to return.
 /// - `first_parent` – When `true`, the graph follows only the first parent of
 ///   each commit (merges collapse onto the mainline). Defaults to `false`.
-/// - `branch`       – When set, show only the history reachable from this
-///   branch tip (local `main` or remote `origin/main`) instead of all refs.
-///   Composes with `first_parent`.
+/// - `branches`     – When non-empty, show only the history reachable from
+///   these branch tips (local `main`, remote `origin/main`) instead of all
+///   refs; several entries produce the union of their reachable sets. Composes
+///   with `first_parent`.
 /// - `max_lanes`    – Lane ceiling override, clamped to 4..=16. Defaults to
 ///   8. Wide windows can request more parallel lanes before the layout
 ///   starts recycling.
@@ -52,15 +53,15 @@ pub async fn get_graph_viewport(
     offset: usize,
     limit: usize,
     first_parent: Option<bool>,
-    branch: Option<String>,
+    branches: Option<Vec<String>>,
     max_lanes: Option<u8>,
     state: State<'_, AppState>,
 ) -> Result<GraphViewport, IpcError> {
-    let options = GraphLayoutOptions {
-        first_parent: first_parent.unwrap_or(false),
-        branch,
-        max_lanes: GraphLayoutOptions::normalize_max_lanes(max_lanes),
-    };
+    let options = GraphLayoutOptions::new(
+        first_parent.unwrap_or(false),
+        branches.unwrap_or_default(),
+        max_lanes,
+    );
 
     // Fast path: slice the slot's cached layout while holding the lock
     // briefly. The layout itself is not Clone/Send, so we compute the
@@ -364,8 +365,8 @@ fn build_graph_chunk(
 /// - `limit`  – Maximum number of commits to include in the returned chunk.
 /// - `first_parent` – Follow only the first parent of each commit. Defaults
 ///   to `false`. Must match the mode of the layout the chunk extends.
-/// - `branch` – Restrict the walk to history reachable from this branch tip.
-///   Must match the mode of the layout the chunk extends.
+/// - `branches`   – Restrict the walk to history reachable from these branch
+///   tips. Must match the mode of the layout the chunk extends.
 /// - `max_lanes` – Lane ceiling override, clamped to 4..=16 (default 8).
 ///   Must match the mode of the layout the chunk extends.
 /// - `anchor` – OID of the last commit in the previously-loaded chunk. Pass it
@@ -383,17 +384,17 @@ pub async fn load_graph_chunk(
     offset: usize,
     limit: usize,
     first_parent: Option<bool>,
-    branch: Option<String>,
+    branches: Option<Vec<String>>,
     max_lanes: Option<u8>,
     anchor: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<GraphViewport, IpcError> {
     let repo_path = get_active_project_path(&state)?;
-    let options = GraphLayoutOptions {
-        first_parent: first_parent.unwrap_or(false),
-        branch,
-        max_lanes: GraphLayoutOptions::normalize_max_lanes(max_lanes),
-    };
+    let options = GraphLayoutOptions::new(
+        first_parent.unwrap_or(false),
+        branches.unwrap_or_default(),
+        max_lanes,
+    );
 
     tokio::task::spawn_blocking(move || {
         let repo = git_engine::Repository::open(repo_path).map_err(|e| e.to_string())?;
@@ -853,25 +854,44 @@ mod tests {
             build_graph_chunk(&repo, 0, 100, None, &GraphLayoutOptions::default()).expect("full");
         assert_eq!(full.nodes.len(), 5);
 
-        let scoped_opts = GraphLayoutOptions {
-            branch: Some(head_branch.clone()),
-            ..Default::default()
-        };
-        let scoped = build_graph_chunk(&repo, 0, 100, None, &scoped_opts).expect("scoped");
-        assert_eq!(scoped.nodes.len(), 4);
-        assert!(!scoped.nodes.iter().any(|n| n.summary == "side work"));
+let scoped_opts = GraphLayoutOptions::new(false, vec![head_branch.clone()], None);
+     let scoped = build_graph_chunk(&repo, 0, 100, None, &scoped_opts).expect("scoped");
+     assert_eq!(scoped.nodes.len(), 4);
+     assert!(!scoped.nodes.iter().any(|n| n.summary == "side work"));
 
-        // branch + first_parent = clean mainline of one branch.
-        let clean_opts = GraphLayoutOptions {
-            first_parent: true,
-            branch: Some(head_branch),
-            ..Default::default()
-        };
-        let clean = build_graph_chunk(&repo, 0, 100, None, &clean_opts).expect("clean");
-        assert_eq!(clean.nodes.len(), 3);
-        assert_eq!(clean.total_lane_count, 1);
-        assert!(!clean.nodes.iter().any(|n| n.summary == "feature work"));
-    }
+     // branch + first_parent = clean mainline of one branch.
+     let clean_opts = GraphLayoutOptions::new(true, vec![head_branch.clone()], None);
+     let clean = build_graph_chunk(&repo, 0, 100, None, &clean_opts).expect("clean");
+     assert_eq!(clean.nodes.len(), 3);
+     assert_eq!(clean.total_lane_count, 1);
+     assert!(!clean.nodes.iter().any(|n| n.summary == "feature work"));
+
+     // Two branches → the union of their reachable sets: the "side" commit
+     // comes back alongside the head branch's 4.
+     let multi_opts = GraphLayoutOptions::new(false, vec![head_branch, "side".to_string()], None);
+     let multi = build_graph_chunk(&repo, 0, 100, None, &multi_opts).expect("multi");
+     assert_eq!(multi.nodes.len(), 5);
+     assert!(multi.nodes.iter().any(|n| n.summary == "side work"));
+     assert!(multi.nodes.iter().any(|n| n.summary == "feature work"));
+ }
+
+ #[test]
+ fn build_graph_chunk_selection_order_does_not_change_the_layout() {
+     // `GraphLayoutOptions::new` sorts the selection, so two orderings of the
+     // same branches compare equal — which is what lets the slot's cached
+     // layout satisfy either request instead of rebuilding per permutation.
+     let (_dir, path) = git_engine::test_support::create_repo_with_branches(&["b0", "b1"]);
+     let repo = git_engine::Repository::open(&path).unwrap();
+
+     let forward = GraphLayoutOptions::new(false, vec!["b0".into(), "b1".into()], None);
+     let backward = GraphLayoutOptions::new(false, vec!["b1".into(), "b0".into()], None);
+     assert_eq!(forward, backward);
+     assert_eq!(forward.variant(), backward.variant());
+
+     let a = build_graph_chunk(&repo, 0, 100, None, &forward).expect("forward");
+     let b = build_graph_chunk(&repo, 0, 100, None, &backward).expect("backward");
+     assert_viewports_equal(&a, &b);
+ }
 
     #[test]
     fn build_graph_chunk_respects_lane_ceiling() {
@@ -899,10 +919,11 @@ mod tests {
     fn build_graph_chunk_branch_scoped_unknown_branch_errors() {
         let (_dir, path) = create_repo_with_n_commits(3);
         let repo = git_engine::Repository::open(&path).unwrap();
-        let opts = GraphLayoutOptions {
-            branch: Some("does-not-exist".to_string()),
-            ..Default::default()
-        };
+        let opts = GraphLayoutOptions::new(
+            false,
+            vec!["does-not-exist".to_string()],
+            None,
+        );
         assert!(build_graph_chunk(&repo, 0, 100, None, &opts).is_err());
     }
 
