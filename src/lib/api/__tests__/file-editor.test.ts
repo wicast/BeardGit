@@ -14,9 +14,13 @@ const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
 }));
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: mocks.invoke,
+  convertFileSrc: (path: string) => path,
+}));
 
 import {
+  assetUrl,
   readWorkdirFile,
   writeWorkdirFile,
   listWorkdirTree,
@@ -30,6 +34,10 @@ beforeEach(() => {
 });
 
 describe("file-editor wrappers", () => {
+  it("assetUrl converts an absolute path via convertFileSrc", () => {
+    expect(assetUrl("/repo/logo.png")).toBe("/repo/logo.png");
+  });
+
   it("readWorkdirFile invokes 'read_workdir_file' with { path }", async () => {
     mocks.invoke.mockResolvedValue({ kind: "text", data: "hi", size: 2 });
     const out = await readWorkdirFile("notes.md");
@@ -37,6 +45,20 @@ describe("file-editor wrappers", () => {
       path: "notes.md",
     });
     expect(out).toEqual({ kind: "text", data: "hi", size: 2 });
+  });
+
+  it("readWorkdirFile preserves an image result", async () => {
+    const image = {
+      kind: "image",
+      path: "/repo/logo.png",
+      size: 8,
+    };
+    mocks.invoke.mockResolvedValue(image);
+    const out = await readWorkdirFile("logo.png");
+    expect(mocks.invoke).toHaveBeenCalledWith("read_workdir_file", {
+      path: "logo.png",
+    });
+    expect(out).toEqual(image);
   });
 
   it("writeWorkdirFile invokes 'write_workdir_file' with { path, content }", async () => {

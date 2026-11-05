@@ -1389,9 +1389,11 @@ export interface WorkdirTreeEntry {
  * Tagged result of `read_workdir_file`. Mirrors
  * `app_core::commands::file_editor::ReadWorkdirFileResult`. The
  * discriminator is `kind`; field names stay snake_case to match the
- * Rust serde shape.
+ * Rust serde shape. The `image` variant carries only the absolute disk
+ * `path` — the webview loads the bytes itself over the asset protocol.
  */
 export type ReadWorkdirFileResult =
   | { kind: "text"; data: string; size: number }
+  | { kind: "image"; path: string; size: number }
   | { kind: "binary"; size: number }
   | { kind: "too_large"; size: number };

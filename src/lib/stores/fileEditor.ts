@@ -82,9 +82,15 @@ export interface EditorTab {
    */
   externalChange: boolean;
   /** Loading / load-error state. */
-  status: "loading" | "ok" | "binary" | "too_large" | "error";
-  /** Bytes — meaningful only when `status === "binary" | "too_large"`. */
+  status: "loading" | "ok" | "image" | "binary" | "too_large" | "error";
+  /** Bytes — meaningful only when `status === "image" | "binary" | "too_large"`. */
   size?: number;
+  /**
+   * Absolute on-disk path for an image preview, set only when
+   * `status === "image"`. `EditorPane` converts it to an asset URL with
+   * `convertFileSrc` — no file bytes are held in the store.
+   */
+  imagePath?: string;
   /** Error message when `status === "error"`. */
   error?: string;
   /**
@@ -419,42 +425,33 @@ function applyReadResult(
     const next = [...list];
     const prev = next[idx];
     const bumpedVersion = prev.loadVersion + 1;
+    // Common reset shared by every successful read. Clearing `imagePath`
+    // here (rather than only in the non-image branches) keeps a stale
+    // preview from lingering if a tab is ever re-read as text/binary.
+    const base: EditorTab = {
+      ...prev,
+      diskContent: "",
+      bufferContent: "",
+      dirty: false,
+      externalChange: false,
+      size: result.size,
+      error: undefined,
+      imagePath: undefined,
+      loadVersion: bumpedVersion,
+    };
     if (result.kind === "text") {
       next[idx] = {
-        ...prev,
+        ...base,
         diskContent: result.data,
         bufferContent: result.data,
-        dirty: false,
-        externalChange: false,
         status: "ok",
-        size: result.size,
-        error: undefined,
-        loadVersion: bumpedVersion,
       };
+    } else if (result.kind === "image") {
+      next[idx] = { ...base, status: "image", imagePath: result.path };
     } else if (result.kind === "binary") {
-      next[idx] = {
-        ...prev,
-        diskContent: "",
-        bufferContent: "",
-        dirty: false,
-        externalChange: false,
-        status: "binary",
-        size: result.size,
-        error: undefined,
-        loadVersion: bumpedVersion,
-      };
+      next[idx] = { ...base, status: "binary" };
     } else {
-      next[idx] = {
-        ...prev,
-        diskContent: "",
-        bufferContent: "",
-        dirty: false,
-        externalChange: false,
-        status: "too_large",
-        size: result.size,
-        error: undefined,
-        loadVersion: bumpedVersion,
-      };
+      next[idx] = { ...base, status: "too_large" };
     }
     return next;
   });
@@ -538,9 +535,15 @@ export function setActiveTab(path: string): void {
   flushBufferEdits();
   activeTabPath.set(path);
   // If the tab was flagged as externally changed, reload it so the
-  // editor doesn't keep showing the prior disk content.
+  // editor doesn't keep showing the prior disk content. Image previews
+  // are read-only but can still change on disk, so they re-read too.
   const tab = get(tabs).find((t) => t.path === path);
-  if (tab && tab.externalChange && !tab.dirty && tab.status === "ok") {
+  if (
+    tab &&
+    tab.externalChange &&
+    !tab.dirty &&
+    (tab.status === "ok" || tab.status === "image")
+  ) {
     void reloadActive();
   }
 }

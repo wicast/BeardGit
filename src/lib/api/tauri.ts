@@ -20,7 +20,7 @@
  * - Multi-project tabs
  */
 
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type { RepoInfo, GraphViewport, GraphViewOptions, CommitInfo, CommitFileChange, BranchInfo, BranchCleanupList, BatchDeleteResult, FileStatus, FileDiff, ProviderUser, ProviderStatusResponse, CiRun, CiRunDetail, TaskInfo, TaskId, TaskOutputLine, ProjectInfo, RecentRepo, RemoteInfo, StatusSummary, StashEntry, TagInfo, CommitStats, ConflictStatus, ConflictFileContents, ThemeMeta, ThemeData, ThemeContrastReport, WorktreeInfo, HunkSelection, BlameLine, FileHistoryEntry, RebaseCommit, RebaseAction, GraphColumnConfig, ReflogEntry, CleanItem, ConfigEntry, ConfigScope, SigningStatus, CommitSignature, SignatureVerification, SigningTestResult, PatchPreview, SubmoduleInfo, MrPr, MrPrDetail, MrPrDiffFile, Label, ProjectSnapshot, AvailableAiProvider, RepoAiStatus, AiSession, AiConversation, AiWorktree, AiConfigFile, BisectState, CliAuthStatus, DebugInfo, Issue, IssueDetail, IssueState, Milestone, Workflow, TriggerResult, Release, ReleaseAsset, ReleaseDetail, CreateReleaseInput, EditReleasePatch, StartBackgroundRunRequest, StartBackgroundRunResponse, AiBackgroundSettings, EditorPreferences, SidebarNavLayout, OpenAiConfig, OpenAiTestResult, ReadWorkdirFileResult, WorkdirTreeEntry, FileDiffStat, FileContentResult } from "../types";
 import type { RemoteRepoConfig, RemoteRepoConfigPatch, ApplyResult, RepoConfigLabel, BranchProtection, ForgeCliStatus } from "../types/repoConfig";
 import type { RequestTreeNode, ParsedRequest, RequestEnvFile, RequestEnvSummary, RunRequestArgs, RunResult, CopyAsArgs, RequestHistoryRow, RequestDiffPayload } from "../types/requests";
@@ -883,12 +883,24 @@ export async function getFileIndex(path: string): Promise<FileContentResult> {
  * Read a workdir file, capped at 2 MB and binary-aware.
  *
  * Returns a discriminated union: `{ kind: "text", data, size }` for plain
- * UTF-8(ish) content, `{ kind: "binary", size }` when a NUL byte appears
- * in the first 8 KB, or `{ kind: "too_large", size }` when the file
- * exceeds the 2 MB cap (in which case content is *not* loaded).
+ * UTF-8(ish) content, `{ kind: "image", path, size }` for an image (only
+ * the absolute path — the webview loads it over the asset protocol),
+ * `{ kind: "binary", size }` when a NUL byte appears in the first 8 KB, or
+ * `{ kind: "too_large", size }` when the file exceeds the 2 MB cap.
  */
 export async function readWorkdirFile(path: string): Promise<ReadWorkdirFileResult> {
   return invoke<ReadWorkdirFileResult>("read_workdir_file", { path });
+}
+
+/**
+ * Turn an absolute file path into a webview-loadable `asset:` URL.
+ *
+ * The backend grants the asset-protocol scope for the exact file before
+ * handing out its path, so this is the only way editor previews should
+ * reach local image files. It is a pure URL construction, not an IPC call.
+ */
+export function assetUrl(path: string): string {
+  return convertFileSrc(path);
 }
 
 /**

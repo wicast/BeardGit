@@ -171,6 +171,22 @@ describe("fileEditor store", () => {
       expect(list[0].size).toBe(12);
     });
 
+    it("stores an image tab with just the disk path", async () => {
+      mocks.readWorkdirFile.mockResolvedValue({
+        kind: "image",
+        path: "/repo/logo.png",
+        size: 8,
+      });
+      await openTab("logo.png");
+      const list = get(tabs);
+      expect(list[0].status).toBe("image");
+      expect(list[0].imagePath).toBe("/repo/logo.png");
+      expect(list[0].size).toBe(8);
+      // No file bytes are held in the store — only the path.
+      expect(list[0].bufferContent).toBe("");
+      expect(list[0].dirty).toBe(false);
+    });
+
     it("flags too-large files with the too_large status", async () => {
       mocks.readWorkdirFile.mockResolvedValue({
         kind: "too_large",
@@ -254,6 +270,19 @@ describe("fileEditor store", () => {
     it("is a no-op when no tab is active", async () => {
       await saveActive();
       expect(mocks.writeWorkdirFile).not.toHaveBeenCalled();
+    });
+
+    it("does not write an image tab back to disk", async () => {
+      mocks.readWorkdirFile.mockResolvedValue({
+        kind: "image",
+        path: "/repo/logo.png",
+        size: 8,
+      });
+      await openTab("logo.png");
+
+      await saveActive();
+      expect(mocks.writeWorkdirFile).not.toHaveBeenCalled();
+      expect(mocks.stageFiles).not.toHaveBeenCalled();
     });
   });
 

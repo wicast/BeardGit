@@ -2,8 +2,9 @@
   EditorPane.svelte — wraps `CodeEditor` for the active editor tab.
 
   Composes the toggleable CodeMirror extensions out of `editorPrefs`,
-  wires Mod+S / Mod+Shift+S → save / save-and-stage shortcuts, and
-  renders friendly placeholders for binary / too-large files.
+  wires Mod+S / Mod+Shift+S → save / save-and-stage shortcuts, renders
+  image files as a preview (straight from disk via the asset protocol), and
+  shows friendly placeholders for binary / too-large files.
 
   The editor remounts (via `{#key tab.path}`) whenever the active tab
   changes so CodeMirror reloads the correct language pack on file
@@ -32,6 +33,7 @@
   } from "@codemirror/view";
   import { colorPicker } from "@replit/codemirror-css-color-picker";
   import { indentationMarkers } from "@replit/codemirror-indentation-markers";
+  import { assetUrl } from "$lib/api/tauri";
   import CodeEditor from "$lib/components/editor/CodeEditor.svelte";
   import { getLanguageExtensionName } from "$lib/components/editor/language-support";
   import { jsonLinter } from "$lib/components/file-editor/json-lint";
@@ -209,6 +211,13 @@
     <div class="placeholder">{m.editor_loading_file()}</div>
   {:else if active.status === "binary"}
     <div class="placeholder">{m.editor_binary_file()}</div>
+  {:else if active.status === "image"}
+    {@const src = assetUrl(active.imagePath ?? "")}
+    <div class="image-view">
+      {#key active.loadVersion}
+        <img class="image-preview" {src} alt={active.name} />
+      {/key}
+    </div>
   {:else if active.status === "too_large"}
     <div class="placeholder">
       {m.editor_too_large({ size: formatSize(active.size) })}
@@ -249,5 +258,32 @@
   }
   .placeholder.error {
     color: var(--accent-red);
+  }
+  .image-view {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: auto;
+    padding: 16px;
+    background-color: var(--bg-secondary);
+    /* Subtle checkerboard so transparent PNGs still read as an image.
+       Both colours are theme tokens — `--overlay-hover` flips between a
+       light and a dark tint per theme — and `transparent` keeps us clear
+       of the colour-literal lint rules. */
+    background-image:
+      linear-gradient(45deg, var(--overlay-hover) 25%, transparent 25%),
+      linear-gradient(-45deg, var(--overlay-hover) 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, var(--overlay-hover) 75%),
+      linear-gradient(-45deg, transparent 75%, var(--overlay-hover) 75%);
+    background-size: 20px 20px;
+    background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+  }
+  .image-preview {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    box-shadow: var(--shadow-overlay);
   }
 </style>

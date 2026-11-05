@@ -58,6 +58,7 @@ export const invokeMock = vi.fn(
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: invokeMock,
+  convertFileSrc: (path: string) => path,
 }));
 
 // ---------------------------------------------------------------------------

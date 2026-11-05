@@ -20,7 +20,7 @@ app-core = { path = "../crates/app-core" }
 github-api = { path = "../crates/github-api" }
 task-runner = { path = "../crates/task-runner" }
 terminal = { path = "../crates/terminal" }
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
