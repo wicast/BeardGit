@@ -21,6 +21,9 @@
 /** Settles when the in-flight backend `switch_project` completes (never rejects). */
 let settled: Promise<void> = Promise.resolve();
 
+/** Whether the switch behind {@link settled} is still running. */
+let inFlight = false;
+
 /**
  * Track the in-flight backend switch. Must be called synchronously when
  * `switch_project` is invoked — before the microtask flush that remounts the
@@ -28,10 +31,29 @@ let settled: Promise<void> = Promise.resolve();
  * previous (already-settled) one.
  */
 export function trackRepoSwitch(switchPromise: Promise<unknown>): void {
-  settled = switchPromise.then(
+  const p = switchPromise.then(
     () => undefined,
     () => undefined,
   );
+  settled = p;
+  inFlight = true;
+  void p.then(() => {
+    // Only the newest switch clears the flag: the A → B → A case tracks B,
+    // then A, and B settling must not release a fetch before A finishes.
+    if (settled === p) inFlight = false;
+  });
+}
+
+/**
+ * Whether a switch is running *right now*, for callers that would otherwise
+ * pay two microtask ticks per request for a gate that always resolves.
+ * Answering `false` is equivalent to awaiting {@link whenRepoSwitchSettled}
+ * on an already-settled switch — the timing is the only difference, and it
+ * is observable: tests that pin IPC ordering by resolving deferred mocks
+ * (the editor tree's listing tests) reorder when an idle call yields.
+ */
+export function repoSwitchInFlight(): boolean {
+  return inFlight;
 }
 
 /**

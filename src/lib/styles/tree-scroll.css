@@ -24,13 +24,14 @@
   `.tree-body` is `overflow: auto` — the horizontal scrollbar pins to the
   bottom of the visible area, which is the better of the two layouts.
 
-  `.tree-x-row` — one row. Owns `width` and `min-width`, so the row is as
-  wide as its own content and never narrower than the container:
-  `min-width: 100%` is what keeps the hover/selected background spanning
-  the panel the way it always has, and `width: max-content` is what lets a
-  deep row grow past it. Above and below the overflow point the rendered
-  result is identical to the old `width: 100%`, so no list changes
-  appearance until something genuinely does not fit.
+  `.tree-x-row` — one row. Owns `width`, `min-width` and `flex-shrink`, so
+  the row is as wide as its own content and never narrower than the
+  container: `min-width: 100%` is what keeps the hover/selected background
+  spanning the panel the way it always has, and `width: max-content` is
+  what lets a deep row grow past it. Above and below the overflow point the
+  rendered result is identical to the old `width: 100%`, so no list changes
+  appearance until something genuinely does not fit. `flex-shrink: 0` is
+  not cosmetic — see the rule itself.
 
   Components must therefore NOT set `width` on a row or `overflow-x` on a
   scroll container: a Svelte-scoped rule (`.file-item.svelte-abc123`)
@@ -67,4 +68,15 @@
 .tree-x-row {
   width: max-content;
   min-width: 100%;
+  /*
+    Rows are flex items in a column container, and every row clamps its
+    label with `overflow: hidden` — which drops the flex automatic minimum
+    size to zero. In a `.tree-x-scroll` with a bounded height (the editor's
+    `.tree-body`), a listing taller than the panel therefore gets divided
+    among the rows instead of scrolling: each one is cut to a sliver of
+    padding and the labels paint on top of each other. The container is a
+    flex box only for the width rules above; the rows still must not
+    negotiate their height.
+  */
+  flex-shrink: 0;
 }

@@ -78,6 +78,7 @@ import {
   expandedDirs,
   loadingDirs,
   searchResults,
+  searchLoading,
   searchTruncated,
   toggleDirectory,
   loadDirectory,
@@ -93,6 +94,7 @@ import {
   forgetProject,
   parkProject,
 } from "../fileEditor";
+import { trackRepoSwitch } from "../repoSwitchReadiness";
 
 /**
  * Stub `localStorage` for tests — jsdom's built-in implementation is
@@ -911,6 +913,86 @@ describe("fileEditor store", () => {
       mocks.readWorkdirFile.mockClear();
       await syncProject("/p/a", true);
       expect(mocks.readWorkdirFile).toHaveBeenCalledWith("a.ts");
+    });
+  });
+
+  /**
+   * Regression for the editor half of the active-repo race: every file-editor
+   * command resolves against the Rust-side active project, which flips only
+   * once `switch_project` finishes — while the panel remounts for the
+   * incoming project in the same tick.
+   */
+  describe("project-switch gate", () => {
+    const flush = () => new Promise<void>((r) => setTimeout(r, 0));
+
+    beforeEach(() => {
+      // No backend switch in flight unless a test tracks one.
+      trackRepoSwitch(Promise.resolve());
+    });
+
+    it("holds the root listing until an in-flight switch settles", async () => {
+      let resolveSwitch!: () => void;
+      trackRepoSwitch(new Promise<void>((r) => { resolveSwitch = r; }));
+      mocks.listWorkdirTree.mockResolvedValue([file("b.ts")]);
+
+      const listing = loadDirectory("", true);
+      await flush();
+      // The IPC must not go out mid-switch: the active project is still A.
+      expect(mocks.listWorkdirTree).not.toHaveBeenCalled();
+
+      resolveSwitch();
+      await listing;
+      expect(mocks.listWorkdirTree).toHaveBeenCalledTimes(1);
+      expect(get(treeChildren).get("")).toHaveLength(1);
+    });
+
+    it("drops a listing whose project was left during the wait", async () => {
+      let resolveSwitch!: () => void;
+      trackRepoSwitch(new Promise<void>((r) => { resolveSwitch = r; }));
+      mocks.listWorkdirTree.mockResolvedValue([file("a.ts")]);
+
+      const listing = loadDirectory("", true);
+      await flush();
+      // Switching project resets the tree while the gate is still pending.
+      resetTree();
+
+      resolveSwitch();
+      await listing;
+      // Issuing it now would ask project B about A's prefix.
+      expect(mocks.listWorkdirTree).not.toHaveBeenCalled();
+      expect(get(treeChildren).get("")).toBeUndefined();
+    });
+
+    it("holds a tab read until the switch settles", async () => {
+      let resolveSwitch!: () => void;
+      trackRepoSwitch(new Promise<void>((r) => { resolveSwitch = r; }));
+      mocks.readWorkdirFile.mockResolvedValue({ kind: "text", data: "b", size: 1 });
+
+      const opening = openTab("a.ts");
+      await flush();
+      expect(mocks.readWorkdirFile).not.toHaveBeenCalled();
+
+      resolveSwitch();
+      await opening;
+      expect(mocks.readWorkdirFile).toHaveBeenCalledWith("a.ts");
+      expect(get(tabs)[0].bufferContent).toBe("b");
+    });
+
+    it("drops a search invalidated by a project switch", async () => {
+      let resolveSwitch!: () => void;
+      trackRepoSwitch(new Promise<void>((r) => { resolveSwitch = r; }));
+      mocks.searchWorkdirFiles.mockResolvedValue([file("a.ts")]);
+
+      const searching = searchTree("a", true);
+      await flush();
+      resetTree();
+
+      resolveSwitch();
+      await searching;
+      expect(mocks.searchWorkdirFiles).not.toHaveBeenCalled();
+      expect(get(searchResults)).toEqual([]);
+      // The reset dropped the spinner with the request, not on its return.
+      expect(get(searchLoading)).toBe(false);
     });
   });
 });

@@ -35,6 +35,10 @@ import {
   writeWorkdirFile as apiWriteFile,
 } from "$lib/api/tauri";
 import { runMutation } from "$lib/api/runMutation";
+import {
+  repoSwitchInFlight,
+  whenRepoSwitchSettled,
+} from "./repoSwitchReadiness";
 import type {
   ReadWorkdirFileResult,
   WorkdirTreeEntry,
@@ -153,6 +157,15 @@ export async function loadDirectory(
   if (prefix === "") treeLoading.set(true);
   loadingDirs.update((s) => withFlag(s, prefix, true));
   try {
+    // `list_workdir_tree` lists whatever `app-core` has active, and the
+    // backend's active project only flips once `switch_project` finishes —
+    // while the frontend remounts the incoming project's panel in the same
+    // tick. Waiting here, after this call's guard token was taken, keeps an
+    // on-mount listing from reading the outgoing repo; a call whose project
+    // was left during the wait is dropped rather than asked about the new
+    // one's copy of that prefix.
+    if (repoSwitchInFlight()) await whenRepoSwitchSettled();
+    if (seq !== treeSeq) return;
     const entries = await apiListTree(
       prefix === "" ? null : prefix,
       DIRECTORY_ENTRY_CAP,
@@ -330,8 +343,10 @@ export function resetTree(): void {
   expandedDirs.set(new Set());
   loadingDirs.set(new Set());
   failedDirs.set(new Set());
+  searchSeq++;
   searchResults.set([]);
   searchTruncated.set(false);
+  searchLoading.set(false);
 }
 
 /**
@@ -373,6 +388,11 @@ export async function searchTree(
   }
   searchLoading.set(true);
   try {
+    // Same window as `loadDirectory`: the walk runs against the active
+    // project, so it must not start while a switch is still loading. A
+    // search invalidated meanwhile (see `resetTree`) stays dropped.
+    if (repoSwitchInFlight()) await whenRepoSwitchSettled();
+    if (seq !== searchSeq) return;
     const hits = await apiSearchFiles(trimmed, SEARCH_RESULT_CAP, respectGitignore);
     if (seq !== searchSeq) return;
     searchResults.set(hits);
@@ -458,6 +478,23 @@ function basename(path: string): string {
 }
 
 /**
+ * Read a file for a tab, through whatever project the backend has active.
+ *
+ * `read_workdir_file` resolves the repo-relative path against `app-core`'s
+ * active project, which only flips once `switch_project` finishes — so a
+ * read issued while a switch is loading opens the outgoing repo's copy of
+ * that path, and a save of what it paints would go back to the outgoing
+ * repo too. Every tab load waits that window out; `applyReadResult` /
+ * `markLoadError` drop the answer if the switch replaced the tab list.
+ */
+async function readActiveProjectFile(
+  path: string,
+): Promise<ReadWorkdirFileResult> {
+  if (repoSwitchInFlight()) await whenRepoSwitchSettled();
+  return apiReadFile(path);
+}
+
+/**
  * Open a file in a new tab (or focus an existing tab). The actual read
  * is performed asynchronously; the tab is added immediately with
  * `status: "loading"` so the UI can show a placeholder.
@@ -487,7 +524,7 @@ export async function openTab(path: string): Promise<void> {
   activeTabPath.set(path);
 
   try {
-    const result = await apiReadFile(path);
+    const result = await readActiveProjectFile(path);
     applyReadResult(path, result);
   } catch (err) {
     markLoadError(path, err);
@@ -634,7 +671,7 @@ export async function reloadActive(): Promise<void> {
   const path = get(activeTabPath);
   if (!path) return;
   try {
-    const result = await apiReadFile(path);
+    const result = await readActiveProjectFile(path);
     applyReadResult(path, result);
   } catch (err) {
     markLoadError(path, err);
@@ -782,7 +819,7 @@ export async function restoreTabsForProject(
   // Read each tab's content sequentially so the active tab paints first.
   for (const p of paths) {
     try {
-      const result = await apiReadFile(p);
+      const result = await readActiveProjectFile(p);
       applyReadResult(p, result);
     } catch (err) {
       markLoadError(p, err);
@@ -915,7 +952,7 @@ export async function syncProject(
     refreshTreePaths(["", ...parked.expandedDirs], respectGitignore),
     ...cleanPaths.map(async (p) => {
       try {
-        applyReadResult(p, await apiReadFile(p));
+        applyReadResult(p, await readActiveProjectFile(p));
       } catch (err) {
         markLoadError(p, err);
       }
@@ -954,8 +991,10 @@ export function parkProject(): void {
   failedDirs.set(new Set());
   loadingDirs.set(new Set());
   treeLoading.set(false);
+  searchSeq++;
   searchResults.set([]);
   searchTruncated.set(false);
+  searchLoading.set(false);
 }
 
 /**
