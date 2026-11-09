@@ -132,6 +132,20 @@
   let bisectSkipSet = $derived(new Set<string>());
   let bisectCurrentOid = $derived($bisectState.active ? $bisectState.current_commit : null);
 
+  /**
+   * The commit HEAD points at — the current branch's tip commit, or the
+   * detached-HEAD commit when there is no branch. Working-tree changes
+   * (staged, unstaged, untracked) never move it: it is always a commit
+   * OID. The `branches` list is the freshest source (it refreshes on every
+   * ref change); `repoInfo.head_oid` covers the window before the list
+   * loads and detached checkouts.
+   */
+  let headOid = $derived(
+    $branchesStore.find((b) => b.is_head && !b.is_remote)?.oid ??
+      $repoInfo?.head_oid ??
+      null,
+  );
+
   // Context menu state
   let contextMenuVisible = $state(false);
   let contextMenuX = $state(0);
@@ -355,6 +369,7 @@
       bb: bisectBadSet.size,
       bs: bisectSkipSet.size,
       bc: bisectCurrentOid,
+      ho: headOid,
     });
     if (drawKey === lastDrawKey) return;
     lastDrawKey = drawKey;
@@ -387,6 +402,7 @@
         bisectBadSet,
         bisectSkipSet,
         bisectCurrentOid,
+        headOid,
       );
       drawPerfOverlay(ctx, canvasW);
     } else {
@@ -413,6 +429,7 @@
         bisectBadSet,
         bisectSkipSet,
         bisectCurrentOid,
+        headOid,
       );
       drawPerfOverlay(ctx, canvasW);
     }
@@ -1002,6 +1019,9 @@
     $selectedGroup;
     $userEmails;
     $activeTheme;
+    // HEAD can move without a viewport swap (e.g. the layout's refs were
+    // captured before a checkout); the current-commit marker reads it.
+    headOid;
     columns;
     filteredNodes;
     $filteredViewport;

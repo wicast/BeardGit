@@ -8,18 +8,39 @@ import { ROW_HEIGHT, LANE_WIDTH, curveBend, defaultGraphTheme, refColor, renderG
  */
 function recordingContext() {
   const strokes: { style: string; alpha: number; kind: string; x: number; y1: number; y2: number }[] = [];
+  const fills: { style: string; alpha: number; points: [number, number][] }[] = [];
+  const rects: { style: string; alpha: number; x: number; y: number; w: number; h: number }[] = [];
   const state: Record<string, unknown> = { strokeStyle: "", fillStyle: "", globalAlpha: 1 };
   let lastPath = "";
+  let points: [number, number][] = [];
   let x = 0, y1 = 0, y2 = 0;
   const ctx = new Proxy(state, {
     get(target, prop: string) {
       if (prop in target) return target[prop];
       if (prop === "measureText") return () => ({ width: 10 });
-      if (prop === "moveTo") return (mx: number, my: number) => { x = mx; y1 = my; y2 = my; };
+      if (prop === "moveTo") return (mx: number, my: number) => { x = mx; y1 = my; y2 = my; points.push([mx, my]); };
       if (prop === "bezierCurveTo") return () => { lastPath = "curve"; };
-      if (prop === "lineTo") return (_lx: number, ly: number) => { y2 = ly; if (lastPath !== "curve") lastPath = "line"; };
+      if (prop === "lineTo") return (lx: number, ly: number) => { y2 = ly; if (lastPath !== "curve") lastPath = "line"; points.push([lx, ly]); };
       if (prop === "arc") return () => { lastPath = "arc"; };
-      if (prop === "beginPath") return () => { lastPath = ""; };
+      if (prop === "beginPath") return () => { lastPath = ""; points = []; };
+      if (prop === "fill") {
+        return () => {
+          fills.push({
+            style: String(target.fillStyle),
+            alpha: Number(target.globalAlpha),
+            points: points.slice(),
+          });
+        };
+      }
+      if (prop === "fillRect") {
+        return (rx: number, ry: number, rw: number, rh: number) => {
+          rects.push({
+            style: String(target.fillStyle),
+            alpha: Number(target.globalAlpha),
+            x: rx, y: ry, w: rw, h: rh,
+          });
+        };
+      }
       if (prop === "stroke") {
         return () => {
           strokes.push({
@@ -37,7 +58,7 @@ function recordingContext() {
       return true;
     },
   }) as unknown as CanvasRenderingContext2D;
-  return { ctx, strokes };
+  return { ctx, strokes, fills, rects };
 }
 
 const node = (oid: string, lane: number, row: number, segment_group: number, is_merge = false) => ({
@@ -112,6 +133,45 @@ describe("renderGraph segment ends under a departing curve", () => {
     expect(bend).toBeGreaterThan(ROW_HEIGHT); // the case that used to spike
     expect(lane2!.y2).toBeCloseTo(rowCentre(3) - bend);
     expect(lane2!.y2).toBeLessThan(rowCentre(2));
+  });
+});
+
+describe("renderGraph HEAD marker", () => {
+  const theme = defaultGraphTheme();
+  const headNode = { ...node("h", 0, 0, 0), refs: ["HEAD", "refs/heads/main"] };
+  // The diamond glyph is the only 4-vertex path the renderer fills in the
+  // HEAD colour; roundRect-based badges record five or more vertices.
+  const isDiamond = (f: { style: string; points: [number, number][] }) =>
+    f.style === theme.refBadge.head && f.points.length === 4;
+
+  it("draws the checked-out commit as a diamond glyph in the HEAD colour", () => {
+    const { ctx, fills } = recordingContext();
+    renderGraph(ctx, [headNode], 0, 600, 100, 1, null, [], [], [], theme);
+    expect(fills.some(isDiamond)).toBe(true);
+  });
+
+  it("draws the HEAD badge as the only solid pill, ahead of the branch badge", () => {
+    const { ctx, fills } = recordingContext();
+    renderGraph(ctx, [headNode], 0, 600, 100, 1, null, [], [], [], theme);
+    expect(fills.some((f) => f.style === theme.refBadge.head && f.points.length !== 4)).toBe(true);
+    // Branch badges stay translucent tints.
+    expect(fills.some((f) => f.style.startsWith("rgba("))).toBe(true);
+  });
+
+  it("recognises HEAD from headOid when the refs were captured before a checkout", () => {
+    const { ctx, fills } = recordingContext();
+    // No HEAD ref on the node — only the OID identifies the checked-out commit.
+    renderGraph(
+      ctx, [node("h", 0, 0, 0)], 0, 600, 100, 1, null, [], [], [], theme,
+      null, [], null, null, null, new Map(), false, new Set(), new Set(), new Set(), null, "h",
+    );
+    expect(fills.some(isDiamond)).toBe(true);
+  });
+
+  it("leaves ordinary commits as plain circles", () => {
+    const { ctx, fills } = recordingContext();
+    renderGraph(ctx, [node("plain", 0, 0, 0)], 0, 600, 100, 1, null, [], [], [], theme);
+    expect(fills.some(isDiamond)).toBe(false);
   });
 });
 

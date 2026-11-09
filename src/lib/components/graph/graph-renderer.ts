@@ -253,9 +253,11 @@ function drawMrPrBadge(
 /**
  * Main graph render function — paints the entire visible viewport.
  *
- * Draws in order: HEAD lane tint, lane segments (with sync-state line styles),
- * merge curves, commit nodes, ref badges, MR/PR badges, and text columns
- * (summary, author, date, SHA). Supports group-based dimming for branch focus.
+ * Draws in order: HEAD lane tint, lane segments (with sync-state line
+ * styles), merge curves, commit nodes (the checked-out commit draws as a
+ * diamond glyph), ref badges (HEAD pinned first and drawn as the one solid
+ * pill), MR/PR badges, and text columns (summary, author, date, SHA).
+ * Supports group-based dimming for branch focus.
  */
 export function renderGraph(
   ctx: CanvasRenderingContext2D,
@@ -280,6 +282,7 @@ export function renderGraph(
   bisectBad: Set<string> = new Set(),
   bisectSkip: Set<string> = new Set(),
   bisectCurrent: string | null = null,
+  headOid: string | null = null,
 ): void {
   ctx.clearRect(0, 0, canvasWidth, canvasHeight);
   performance.mark('render-start');
@@ -295,6 +298,10 @@ export function renderGraph(
   function resetOpacity() {
     ctx.globalAlpha = 1.0;
   }
+
+  // The backend tags the checked-out commit's refs with a literal "HEAD";
+  // `headOid` covers layouts whose refs were captured before a checkout.
+  const isHeadNode = (n: LayoutNode) => n.oid === headOid || n.refs.includes("HEAD");
 
   // HEAD lane background tint — dimmed along with the other lanes when a
   // branch group is selected, so the highlighted branch stands out
@@ -627,14 +634,17 @@ export function renderGraph(
     const y = rowY(node.row, offset);
     const color = laneColor(node.lane, theme);
     const isSelected = node.oid === selectedOid;
+    const isHead = isHeadNode(node);
+    const baseRadius = node.is_merge ? theme.mergeRadius : theme.nodeRadius;
 
     // Background halo — clears lane lines behind the node for visibility
     ctx.beginPath();
-    ctx.arc(x, y, (node.is_merge ? theme.mergeRadius : theme.nodeRadius) + 2, 0, Math.PI * 2);
+    ctx.arc(x, y, baseRadius + 2, 0, Math.PI * 2);
     ctx.fillStyle = theme.background;
     ctx.fill();
 
     setGroupOpacity(node.segment_group);
+
     ctx.beginPath();
     if (node.is_merge) {
       // Merge node: hollow circle with thick border
@@ -648,6 +658,33 @@ export function renderGraph(
       // Regular node: solid filled circle
       const radius = isSelected ? theme.nodeRadius + 1.5 : theme.nodeRadius;
       ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+    }
+
+    // HEAD glyph — the checked-out commit draws as a diamond badge: a thick
+    // HEAD-coloured diamond ring around a lane-coloured core. A shape that
+    // differs from every other node makes the branch tip identifiable
+    // without comparing dot sizes or tinting the row (a row wash reads as
+    // another selection highlight).
+    if (isHead) {
+      const headColor = theme.refBadge.head;
+      const diamondR = baseRadius + (isSelected ? 1.5 : 0) + 3.5;
+      const diamond = (r: number) => {
+        ctx.beginPath();
+        ctx.moveTo(x, y - r);
+        ctx.lineTo(x + r, y);
+        ctx.lineTo(x, y + r);
+        ctx.lineTo(x - r, y);
+        ctx.closePath();
+      };
+      diamond(diamondR);
+      ctx.fillStyle = headColor;
+      ctx.fill();
+      diamond(diamondR - 2.5);
+      ctx.fillStyle = theme.background;
+      ctx.fill();
+      diamond(Math.max(1.5, diamondR - 5.5));
       ctx.fillStyle = color;
       ctx.fill();
     }
@@ -719,11 +756,18 @@ export function renderGraph(
     setGroupOpacity(node.segment_group);
     const y = rowY(node.row, offset);
     const isSelected = node.oid === selectedOid;
+    const isHead = isHeadNode(node);
     const rowTop = y - ROW_HEIGHT / 2;
     let currentX = textX;
 
     // ── Ref badges (clipped to message area) ──
-    if (node.refs.length > 0) {
+    // HEAD is pinned to the front and filtered out of the rest, so the
+    // marker can't be pushed out of the clipped message area by a commit
+    // carrying many refs.
+    const refs = isHead
+      ? ["HEAD", ...node.refs.filter((r) => refKind(r) !== "head")]
+      : node.refs;
+    if (refs.length > 0) {
       ctx.save();
       ctx.beginPath();
       ctx.rect(textX, rowTop, messageEndX - textX, ROW_HEIGHT);
@@ -732,7 +776,7 @@ export function renderGraph(
       ctx.font = `11px ${CANVAS_FONT_MONO}`;
       ctx.textBaseline = "middle";
 
-      for (const ref of node.refs) {
+      for (const ref of refs) {
         const label = refLabel(ref);
         const badgeColor = refColor(ref, theme);
         const textWidth = ctx.measureText(label).width;
@@ -741,17 +785,27 @@ export function renderGraph(
         // Stop drawing badges if they'd overflow
         if (currentX + badgeWidth > messageEndX - 40) break;
 
-        // `withAlpha`, not `color + "22"`: a theme may hand us rgb()/hsl()
-        // or a short hex, and appending two digits to those is an invalid
-        // colour the canvas silently drops — the badge vanished.
-        ctx.fillStyle = withAlpha(badgeColor, 0.13);
-        ctx.strokeStyle = withAlpha(badgeColor, 0.4);
-        ctx.lineWidth = 1;
-        roundRect(ctx, currentX, y - REF_BADGE_HEIGHT / 2, badgeWidth, REF_BADGE_HEIGHT, 3);
-        ctx.fill();
-        ctx.stroke();
+        if (refKind(ref) === "head") {
+          // The one solid pill in the row: an outlined HEAD pill looked
+          // identical to every branch badge, so the checked-out commit
+          // was indistinguishable at a glance.
+          ctx.fillStyle = badgeColor;
+          roundRect(ctx, currentX, y - REF_BADGE_HEIGHT / 2, badgeWidth, REF_BADGE_HEIGHT, 3);
+          ctx.fill();
+          ctx.fillStyle = theme.background;
+        } else {
+          // `withAlpha`, not `color + "22"`: a theme may hand us rgb()/hsl()
+          // or a short hex, and appending two digits to those is an invalid
+          // colour the canvas silently drops — the badge vanished.
+          ctx.fillStyle = withAlpha(badgeColor, 0.13);
+          ctx.strokeStyle = withAlpha(badgeColor, 0.4);
+          ctx.lineWidth = 1;
+          roundRect(ctx, currentX, y - REF_BADGE_HEIGHT / 2, badgeWidth, REF_BADGE_HEIGHT, 3);
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle = badgeColor;
+        }
 
-        ctx.fillStyle = badgeColor;
         ctx.fillText(label, currentX + REF_BADGE_PADDING, y);
         currentX += badgeWidth + 4;
       }

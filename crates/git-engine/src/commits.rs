@@ -59,8 +59,9 @@ fn commit_to_info(
 
 /// Build a map from OID (as string) → list of fully-qualified ref names
 /// pointing to it (`refs/heads/main`, `refs/remotes/origin/main`,
-/// `refs/tags/v1.0`, …). Symbolic refs (`HEAD`) resolve to their target,
-/// so the qualified name of the branch they point at is recorded instead.
+/// `refs/tags/v1.0`, …), with a literal `HEAD` prepended to the checked-out
+/// commit's list. libgit2's reference iterator only yields enumerated refs —
+/// the HEAD pseudo-ref is not one of them — so it is resolved separately.
 ///
 /// `Reference::name`, not `shorthand`: the stripped form (`main`, `origin/main`,
 /// `v1.0`) is ambiguous — a tag and a same-named branch collapse to one string,
@@ -95,6 +96,19 @@ fn build_ref_map(repo: &git2::Repository) -> HashMap<String, Vec<String>> {
         }
     }
 
+    // libgit2's reference iterator yields only the refs it can enumerate from
+    // the ref store — the HEAD pseudo-ref at the repository root is not one of
+    // them. Resolve it explicitly and tag the checked-out commit: the graph
+    // renderer keys its current-commit marker on a literal "HEAD" entry, and
+    // `GraphLayout::compute` keys the HEAD lane tint on the same string.
+    if let Ok(head) = repo.head()
+        && let Some(oid) = head.target()
+    {
+        map.entry(oid.to_string())
+            .or_default()
+            .insert(0, "HEAD".to_string());
+    }
+
     map
 }
 
@@ -104,29 +118,37 @@ fn build_ref_map(repo: &git2::Repository) -> HashMap<String, Vec<String>> {
 /// which only needs the refs of a single commit. See [`build_ref_map`] for
 /// why the qualified name (not `shorthand`) is the contract here.
 fn refs_for_oid(repo: &git2::Repository, target: git2::Oid) -> Vec<String> {
-    let Ok(references) = repo.references() else {
-        return Vec::new();
-    };
-
     let mut hits = Vec::new();
-    for reference in references.flatten() {
-        let oid = match reference.target() {
-            Some(oid) => oid,
-            None => match reference.resolve().ok().and_then(|r| r.target()) {
+    if let Ok(references) = repo.references() {
+        for reference in references.flatten() {
+            let oid = match reference.target() {
                 Some(oid) => oid,
-                None => continue,
-            },
-        };
-        if oid != target {
-            continue;
+                None => match reference.resolve().ok().and_then(|r| r.target()) {
+                    Some(oid) => oid,
+                    None => continue,
+                },
+            };
+            if oid != target {
+                continue;
+            }
+            hits.push(
+                reference
+                    .name()
+                    .unwrap_or_else(|| reference.shorthand().unwrap_or("unknown"))
+                    .to_owned(),
+            );
         }
-        hits.push(
-            reference
-                .name()
-                .unwrap_or_else(|| reference.shorthand().unwrap_or("unknown"))
-                .to_owned(),
-        );
     }
+
+    // Mirror `build_ref_map`: the HEAD pseudo-ref is not yielded by the
+    // reference iterator, so tag the checked-out commit explicitly. The
+    // walk path and this single-commit path must agree on the ref list.
+    if let Ok(head) = repo.head()
+        && head.target() == Some(target)
+    {
+        hits.insert(0, "HEAD".to_string());
+    }
+
     hits
 }
 
@@ -747,6 +769,21 @@ mod tests {
             tagged.refs.iter().any(|r| r == branch_ref.as_str()),
             "expected branch ref {branch_ref} in {:?}",
             tagged.refs
+        );
+        assert!(
+            tagged.refs.iter().any(|r| r == "HEAD"),
+            "the checked-out commit must carry HEAD in its refs: {:?}",
+            tagged.refs
+        );
+        // A commit below HEAD is not the checked-out one.
+        let older = commits
+            .iter()
+            .find(|c| c.oid != head_oid.to_string())
+            .expect("repo has more than one commit");
+        assert!(
+            older.refs.iter().all(|r| r != "HEAD"),
+            "only the checked-out commit carries HEAD: {:?}",
+            older.refs
         );
         assert!(
             tagged.refs.iter().any(|r| r == "refs/tags/v1.0.0"),

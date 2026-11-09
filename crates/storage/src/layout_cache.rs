@@ -33,7 +33,13 @@ use sha2::{Digest, Sha256};
 /// repo state, not the ref-name convention, so without the bump a cached
 /// layout would keep serving bare tag names — which the renderer reads as
 /// branches — until something else moved a ref.
-pub const SCHEMA_VERSION: u32 = 5;
+///
+/// Bumped 5 → 6 when `HEAD` became an explicit entry in the checked-out
+/// commit's `refs` list (libgit2's reference iterator never yields the HEAD
+/// pseudo-ref). Cached layouts hold the old ref lists and a `head_lane` of
+/// `None`, so without the bump the graph would keep drawing the current
+/// commit without its marker until something else moved a ref.
+pub const SCHEMA_VERSION: u32 = 6;
 
 /// A single repo's cached graph layout along with the state that produced it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
