@@ -32,7 +32,6 @@ export function buildGraphTheme(theme: ThemeData): GraphTheme {
     purple: theme.derived.accent_purple,
     pink: g.ref_head,
     laneColors: g.lane_colors,
-    headLaneTint: g.head_lane_tint,
     dimOpacity: g.dim_opacity,
     selectionHighlight: g.selection_highlight,
     nodeRadius: g.node_radius,

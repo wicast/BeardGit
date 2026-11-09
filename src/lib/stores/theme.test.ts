@@ -48,7 +48,6 @@ describe("buildGraphTheme", () => {
     expect(result.textPrimary).toBe(g.text_primary);
     expect(result.textSecondary).toBe(g.text_secondary);
     expect(result.textSha).toBe(g.text_sha);
-    expect(result.headLaneTint).toBe(g.head_lane_tint);
     expect(result.selectionHighlight).toBe(g.selection_highlight);
     expect(result.dimOpacity).toBe(g.dim_opacity);
     expect(result.nodeRadius).toBe(g.node_radius);

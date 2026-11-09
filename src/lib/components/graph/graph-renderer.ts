@@ -79,7 +79,6 @@ export function defaultGraphTheme(): GraphTheme {
       cssToken("--graph-color-4", "#f778ba"),
       cssToken("--graph-color-5", "#79c0ff"),
     ],
-    headLaneTint: tokenAlpha("--accent-primary", "#58a6ff", 0.04),
     dimOpacity: 0.3,
     selectionHighlight: tokenAlpha("--accent-blue", "#58a6ff", 0.08),
     nodeRadius: 5,
@@ -253,11 +252,12 @@ function drawMrPrBadge(
 /**
  * Main graph render function — paints the entire visible viewport.
  *
- * Draws in order: HEAD lane tint, lane segments (with sync-state line
- * styles), merge curves, commit nodes (the checked-out commit draws as a
- * diamond glyph), ref badges (HEAD pinned first and drawn as the one solid
- * pill), MR/PR badges, and text columns (summary, author, date, SHA).
- * Supports group-based dimming for branch focus.
+ * Draws in order: lane segments (with sync-state line styles), merge
+ * curves, commit nodes (the checked-out commit draws as a diamond glyph),
+ * ref badges (HEAD pinned first and drawn as the one solid pill), MR/PR
+ * badges, and text columns (summary, author, date, SHA). Supports
+ * group-based dimming for branch focus. The checked-out branch is marked
+ * on its tip commit only — no lane-wide treatment.
  */
 export function renderGraph(
   ctx: CanvasRenderingContext2D,
@@ -271,7 +271,6 @@ export function renderGraph(
   laneSegments: LaneSegment[] = [],
   mergeCurves: MergeCurve[] = [],
   theme: GraphTheme = defaultGraphTheme(),
-  headLane: number | null = null,
   userEmails: string[] = [],
   selectedGroup: number | null = null,
   hoveredGroup: number | null = null,
@@ -302,21 +301,6 @@ export function renderGraph(
   // The backend tags the checked-out commit's refs with a literal "HEAD";
   // `headOid` covers layouts whose refs were captured before a checkout.
   const isHeadNode = (n: LayoutNode) => n.oid === headOid || n.refs.includes("HEAD");
-
-  // HEAD lane background tint — dimmed along with the other lanes when a
-  // branch group is selected, so the highlighted branch stands out
-  // instead of competing with a full-strength background wash.
-  if (headLane !== null) {
-    ctx.globalAlpha = selectedGroup === null ? 1.0 : theme.dimOpacity;
-    ctx.fillStyle = theme.headLaneTint;
-    ctx.fillRect(
-      laneX(headLane) - LANE_WIDTH / 2,
-      0,
-      LANE_WIDTH,
-      canvasHeight
-    );
-    resetOpacity();
-  }
 
   // Hovered group is handled during lane segment drawing — thicker + brighter line
 
@@ -409,15 +393,11 @@ export function renderGraph(
   const ARROW_SIZE = 4;
   for (const seg of laneSegments) {
     setGroupOpacity(seg.group_id);
-    // Set line style based on hover, HEAD lane, and sync state
-    const isHeadLane = headLane !== null && seg.lane === headLane;
+    // Set line style based on hover and sync state
     const isHovered = hoveredGroup !== null && seg.group_id === hoveredGroup && selectedGroup === null;
     if (isHovered) {
       // Hovered lane: thicker + brighter line (the line itself glows)
       ctx.lineWidth = 3.5;
-      ctx.setLineDash(seg.sync_state === "RemoteOnly" ? [4, 3] : seg.sync_state === "LocalOnly" ? [6, 3] : []);
-    } else if (isHeadLane) {
-      ctx.lineWidth = 3;
       ctx.setLineDash(seg.sync_state === "RemoteOnly" ? [4, 3] : seg.sync_state === "LocalOnly" ? [6, 3] : []);
     } else {
       switch (seg.sync_state) {

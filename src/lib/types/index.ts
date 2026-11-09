@@ -101,7 +101,6 @@ export interface GraphTheme {
   purple: string;
   pink: string;
   laneColors: string[];
-  headLaneTint: string;
   dimOpacity: number;
   selectionHighlight: string;
   nodeRadius: number;

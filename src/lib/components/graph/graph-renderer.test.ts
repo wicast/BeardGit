@@ -108,7 +108,7 @@ describe("renderGraph merge curves", () => {
     const { ctx, strokes } = recordingContext();
     // Select group 0 (the mainline): lane 1's line, including its opening
     // bend, must be dimmed together.
-    renderGraph(ctx, nodes, 0, 600, 200, 2, null, [], segments, curves, theme, null, [], 0);
+    renderGraph(ctx, nodes, 0, 600, 200, 2, null, [], segments, curves, theme, [], 0);
     const curveStrokes = strokes.filter((s) => s.kind === "curve");
     expect(curveStrokes[0].alpha).toBeCloseTo(0.85 * theme.dimOpacity);
   });
@@ -163,7 +163,7 @@ describe("renderGraph HEAD marker", () => {
     // No HEAD ref on the node — only the OID identifies the checked-out commit.
     renderGraph(
       ctx, [node("h", 0, 0, 0)], 0, 600, 100, 1, null, [], [], [], theme,
-      null, [], null, null, null, new Map(), false, new Set(), new Set(), new Set(), null, "h",
+      [], null, null, null, new Map(), false, new Set(), new Set(), new Set(), null, "h",
     );
     expect(fills.some(isDiamond)).toBe(true);
   });
