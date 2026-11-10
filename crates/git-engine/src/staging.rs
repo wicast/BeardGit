@@ -47,55 +47,70 @@ impl Repository {
         for entry in statuses.iter() {
             let s = entry.status();
 
-            let (status, is_staged) = if s.contains(git2::Status::INDEX_NEW) {
-                ("new".to_string(), true)
-            } else if s.contains(git2::Status::INDEX_MODIFIED) {
-                ("modified".to_string(), true)
-            } else if s.contains(git2::Status::INDEX_DELETED) {
-                ("deleted".to_string(), true)
-            } else if s.contains(git2::Status::INDEX_RENAMED) {
-                ("renamed".to_string(), true)
-            } else if s.contains(git2::Status::WT_NEW) {
-                ("new".to_string(), false)
-            } else if s.contains(git2::Status::WT_MODIFIED) {
-                ("modified".to_string(), false)
-            } else if s.contains(git2::Status::WT_DELETED) {
-                ("deleted".to_string(), false)
-            } else if s.contains(git2::Status::WT_RENAMED) {
-                ("renamed".to_string(), false)
-            } else {
-                continue;
-            };
-
-            // For renames libgit2's `entry.path()` is often the *old* path;
-            // the destination lives on the rename delta. Surface the new path
-            // so the Changes view lists the file as it exists now, with a
-            // single `R` row instead of a delete on the old path.
-            let path = if status == "renamed" {
-                let delta = if is_staged {
-                    entry.head_to_index()
-                } else {
-                    entry.index_to_workdir()
+            // A single entry can carry changes on *both* sides of the index:
+            // a file that was staged and then edited again reports
+            // `INDEX_MODIFIED | WT_MODIFIED` ("MM" in `git status --short`).
+            // Emit one row per side so the path shows up in both the Staged
+            // and Unstaged lists. An if/else-if chain here would keep only
+            // the index side and silently hide the further workdir edit.
+            for (is_staged, candidates) in [
+                (
+                    true,
+                    [
+                        (git2::Status::INDEX_NEW, "new"),
+                        (git2::Status::INDEX_MODIFIED, "modified"),
+                        (git2::Status::INDEX_DELETED, "deleted"),
+                        (git2::Status::INDEX_RENAMED, "renamed"),
+                    ],
+                ),
+                (
+                    false,
+                    [
+                        (git2::Status::WT_NEW, "new"),
+                        (git2::Status::WT_MODIFIED, "modified"),
+                        (git2::Status::WT_DELETED, "deleted"),
+                        (git2::Status::WT_RENAMED, "renamed"),
+                    ],
+                ),
+            ] {
+                let Some(status) = candidates
+                    .iter()
+                    .find(|(flag, _)| s.contains(*flag))
+                    .map(|(_, name)| *name)
+                else {
+                    continue;
                 };
-                delta
-                    .as_ref()
-                    .and_then(|d| {
-                        d.new_file()
-                            .path()
-                            .map(|p| p.to_string_lossy().to_string())
-                    })
-                    .filter(|p| !p.is_empty())
-                    .or_else(|| entry.path().map(|s| s.to_string()))
-                    .unwrap_or_default()
-            } else {
-                entry.path().unwrap_or("").to_string()
-            };
 
-            result.push(FileStatus {
-                path,
-                status,
-                is_staged,
-            });
+                // For renames libgit2's `entry.path()` is often the *old* path;
+                // the destination lives on the rename delta. Surface the new
+                // path so the Changes view lists the file as it exists now,
+                // with a single `R` row instead of a delete on the old path.
+                let path = if status == "renamed" {
+                    let delta = if is_staged {
+                        entry.head_to_index()
+                    } else {
+                        entry.index_to_workdir()
+                    };
+                    delta
+                        .as_ref()
+                        .and_then(|d| {
+                            d.new_file()
+                                .path()
+                                .map(|p| p.to_string_lossy().to_string())
+                        })
+                        .filter(|p| !p.is_empty())
+                        .or_else(|| entry.path().map(|s| s.to_string()))
+                        .unwrap_or_default()
+                } else {
+                    entry.path().unwrap_or("").to_string()
+                };
+
+                result.push(FileStatus {
+                    path,
+                    status: status.to_string(),
+                    is_staged,
+                });
+            }
         }
         Ok(result)
     }
@@ -395,6 +410,64 @@ mod tests {
         let new = statuses.iter().find(|s| s.path == "new.txt").unwrap();
         assert_eq!(new.status, "new");
         assert!(!new.is_staged);
+    }
+
+    #[test]
+    fn test_file_statuses_staged_file_modified_again_lists_both_sides() {
+        // `git status --short` shows "MM existing.txt": one index-side change
+        // and a further workdir-side change on the same path. Both must be
+        // visible, otherwise the Unstaged list hides the second edit.
+        let (dir, repo) = create_repo_with_committed_file();
+        fs::write(dir.path().join("existing.txt"), "staged\n").unwrap();
+        repo.stage_files(&["existing.txt".to_string()]).unwrap();
+        fs::write(dir.path().join("existing.txt"), "staged + more\n").unwrap();
+
+        let statuses = repo.file_statuses().unwrap();
+        assert!(
+            statuses
+                .iter()
+                .any(|s| s.path == "existing.txt" && s.status == "modified" && s.is_staged),
+            "staged change missing, got {statuses:?}"
+        );
+        assert!(
+            statuses
+                .iter()
+                .any(|s| s.path == "existing.txt" && s.status == "modified" && !s.is_staged),
+            "further unstaged edit missing, got {statuses:?}"
+        );
+        assert_eq!(
+            statuses.len(),
+            2,
+            "expected exactly one row per side, got {statuses:?}"
+        );
+    }
+
+    #[test]
+    fn test_file_statuses_staged_new_file_modified_again_lists_both_sides() {
+        // "AM" — a staged addition that was edited before committing.
+        let (dir, repo) = create_repo_with_committed_file();
+        fs::write(dir.path().join("new.txt"), "first\n").unwrap();
+        repo.stage_files(&["new.txt".to_string()]).unwrap();
+        fs::write(dir.path().join("new.txt"), "first + more\n").unwrap();
+
+        let statuses = repo.file_statuses().unwrap();
+        assert!(
+            statuses
+                .iter()
+                .any(|s| s.path == "new.txt" && s.status == "new" && s.is_staged),
+            "staged addition missing, got {statuses:?}"
+        );
+        assert!(
+            statuses
+                .iter()
+                .any(|s| s.path == "new.txt" && s.status == "modified" && !s.is_staged),
+            "further unstaged edit missing, got {statuses:?}"
+        );
+        assert_eq!(
+            statuses.len(),
+            2,
+            "expected exactly one row per side, got {statuses:?}"
+        );
     }
 
     #[test]
