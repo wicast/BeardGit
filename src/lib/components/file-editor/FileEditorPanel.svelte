@@ -20,6 +20,7 @@
   import ConfirmDialog from "$lib/components/common/ConfirmDialog.svelte";
   import SplitView from "$lib/components/common/SplitView.svelte";
   import { editorPrefs } from "$lib/stores/editorPrefs";
+  import { blameActiveTab, openBlame } from "$lib/stores/blame";
   import {
     createPath,
     deletePath,
@@ -38,6 +39,13 @@
   import EditorToolbar from "./EditorToolbar.svelte";
   import FileTreeView from "./FileTreeView.svelte";
   import PathDialog from "./PathDialog.svelte";
+
+  interface Props {
+    /** Route-level navigation hook, used to open the blame/history view. */
+    onNavigate?: (view: string) => void;
+  }
+
+  let { onNavigate }: Props = $props();
 
   /** Whether the workdir tree should hide gitignored entries. */
   let respectGitignore = $derived(
@@ -109,6 +117,19 @@
     deleteTarget = entry;
   }
 
+  /**
+   * Open the blame view on its History tab for a workdir file — the same
+   * entry point the staging / commit-detail context menus use. `openBlame`
+   * loads both blame and history and records the path; pinning the tab
+   * afterwards overrides its own `'blame'` default. The route hook then
+   * switches views and records where "back" should return to.
+   */
+  function openFileHistory(path: string) {
+    void openBlame(path);
+    blameActiveTab.set("history");
+    onNavigate?.("blame");
+  }
+
   /** Rebuild a path with the renamed leaf, keeping the original parent. */
   function siblingPath(currentPath: string, newLeaf: string): string {
     const idx = currentPath.lastIndexOf("/");
@@ -172,6 +193,7 @@
           onNewFolder={openNewFolder}
           onRename={openRename}
           onDelete={openDelete}
+          onFileHistory={openFileHistory}
         />
       {/snippet}
       {#snippet right()}

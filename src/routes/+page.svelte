@@ -1144,7 +1144,10 @@
       {:else if activeView === "requests"}
         <LazyComponent loader={() => import("$lib/components/requests/RequestsPanel.svelte")} />
       {:else if activeView === "editor"}
-        <LazyComponent loader={() => import("$lib/components/file-editor/FileEditorPanel.svelte")} />
+        <LazyComponent
+          loader={() => import("$lib/components/file-editor/FileEditorPanel.svelte")}
+          props={{ onNavigate: (view: string) => void handleNavigate(view) }}
+        />
       {:else if activeView === "compare"}
         <LazyComponent loader={() => import("$lib/components/compare/CompareView.svelte")} />
       {:else if $isLoading}

@@ -5,7 +5,9 @@
   exposes a context menu with file-system CRUD actions on each row.
   Selection mirrors the active editor tab so clicking a file opens it,
   and right-click on directory rows offers "New file/folder here" with
-  the directory pre-filled as the parent in the dialogs.
+  the directory pre-filled as the parent in the dialogs. File rows also
+  offer "File History", which hands the path back to the panel so it can
+  open the blame view on its History tab.
 
   Typing in the filter switches the pane to a flat result list from
   `search_workdir_files`, which walks the working directory on the Rust
@@ -61,6 +63,8 @@
     onNewFolder: (parentDir: string) => void;
     onRename: (entry: WorkdirTreeEntry) => void;
     onDelete: (entry: WorkdirTreeEntry) => void;
+    /** Open the file's commit history (the blame view's History tab). */
+    onFileHistory: (path: string) => void;
   }
 
   let {
@@ -69,6 +73,7 @@
     onNewFolder,
     onRename,
     onDelete,
+    onFileHistory,
   }: Props = $props();
 
   let filterQuery = $state("");
@@ -151,6 +156,10 @@
       items.push({
         label: m.editor_open(),
         action: () => void openTab(entry.path),
+      });
+      items.push({
+        label: m.context_file_history(),
+        action: () => onFileHistory(entry.path),
       });
     }
     items.push({
