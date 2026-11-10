@@ -655,8 +655,10 @@
 
   /** Context menu for a DIRECTORY row in tree mode. Unstaged lists offer
    *  folder discard (expanded to the currently-changed files beneath the
-   *  directory and run through the same guarded `discard_files` call);
-   *  both list kinds can reveal or copy the folder path. */
+   *  directory and run through the same guarded `discard_files` call) and
+   *  "Add to .gitignore", which ignores the folder itself (`/dir/`) rather
+   *  than the changed files inside it; both list kinds can reveal or copy
+   *  the folder path. */
   function openDirContextMenu(e: MouseEvent, dirPath: string) {
     e.preventDefault();
     contextMenuFile = null;
@@ -673,6 +675,26 @@
       items.push({
         label: m.changes_menu_discard_folder({ count: String(count) }),
         action: () => discardFolder(dirPath),
+      });
+    }
+    if (!isStaged) {
+      // A trailing slash makes this a directory pattern; the leading slash
+      // anchors it to the repo root, where `add_gitignore_pattern` writes.
+      const pattern = `/${dirPath}/`;
+      items.push({
+        label: m.gitignore_menu_title(),
+        action: async () => {
+          try {
+            await runMutation({
+              kind: "gitignore_add",
+              invoke: () => addGitignorePattern(pattern),
+              successToast: () => `Added \`${pattern}\` to .gitignore`,
+              failureToastPrefix: "Gitignore update failed",
+            });
+          } catch {
+            // runMutation already surfaced the toast.
+          }
+        },
       });
     }
     items.push({
