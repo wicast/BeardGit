@@ -6,12 +6,15 @@
   import { onMount, onDestroy } from "svelte";
   import type { UnlistenFn } from "@tauri-apps/api/event";
   import * as m from "$lib/paraglide/messages";
-  import { createWorkingTreePatch, savePatchToFile, pushRemote, saveAiReview, getSigningConfig, getTasks, getTaskOutput } from "$lib/api/tauri";
+  import { createWorkingTreePatch, savePatchToFile, pushRemote, saveAiReview, getSigningConfig, getTasks, getTaskOutput, discardFiles } from "$lib/api/tauri";
   import { getErrorMessage } from "$lib/api/errors";
   import type { SigningStatus, TaskInfo } from "$lib/types";
   import { formatSigningBackend } from "$lib/utils/signing";
   import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
   import { runMutation } from "$lib/api/runMutation";
+  import { doStashPush } from "$lib/stores/stashes";
+  import ContextMenu from "../common/ContextMenu.svelte";
+  import type { MenuItem } from "../common/ContextMenu.svelte";
   import { hasAiProvider, aiReviewCode } from "$lib/stores/ai";
   import { generateCommitMessage, aiCommitGenerating } from "$lib/stores/aiCommitMessage";
   import { commitDrafts, setDraft, clearDraft, EMPTY_DRAFT } from "$lib/stores/commitDraft";
@@ -143,6 +146,80 @@
   let stagedStatMap = $derived(toStatMap($stagedStats));
   let unstagedStatMap = $derived(toStatMap($unstagedStats));
   let showCleanDialog = $state(false);
+
+  // Right-clicking blank space in the lists acts on every change above it —
+  // the same git actions as checking every row in both lists at once. A path
+  // can appear in both lists (staged file edited again), so the "all" set is
+  // de-duplicated for stash and copy while stage/discard use their own side.
+  let allPaths = $derived([...new Set($fileStatuses.map((f) => f.path))]);
+  let stagedPaths = $derived(staged.map((f) => f.path));
+  let unstagedPaths = $derived(unstaged.map((f) => f.path));
+  let blankMenuVisible = $state(false);
+  let blankMenuX = $state(0);
+  let blankMenuY = $state(0);
+  let showDiscardAllConfirm = $state(false);
+
+  /** Row and directory rows own their context menus; anything else in the
+   *  scroller is blank space and opens the "all changes" menu. */
+  function openBlankContextMenu(e: MouseEvent) {
+    if ((e.target as HTMLElement).closest(".file-item")) return;
+    e.preventDefault();
+    if (allPaths.length === 0) return;
+    blankMenuX = e.clientX;
+    blankMenuY = e.clientY;
+    blankMenuVisible = true;
+  }
+
+  function buildBlankMenuItems(): MenuItem[] {
+    const items: MenuItem[] = [];
+    if (unstaged.length > 0) {
+      items.push({
+        label: m.changes_menu_stage_all({ count: String(unstaged.length) }),
+        action: () => void stageFiles(unstagedPaths),
+      });
+    }
+    if (staged.length > 0) {
+      items.push({
+        label: m.changes_menu_unstage_all({ count: String(staged.length) }),
+        action: () => void unstageFiles(stagedPaths),
+      });
+    }
+    if (items.length > 0) items.push({ separator: true });
+    if (unstaged.length > 0) {
+      items.push({
+        label: m.changes_menu_discard_all({ count: String(unstaged.length) }),
+        tone: "danger",
+        action: () => { showDiscardAllConfirm = true; },
+      });
+    }
+    if (allPaths.length > 0) {
+      items.push({
+        label: m.changes_menu_stash_all({ count: String(allPaths.length) }),
+        action: () => void doStashPush(null, allPaths),
+      });
+      items.push({
+        label: m.changes_menu_copy_all_paths({ count: String(allPaths.length) }),
+        action: () => void navigator.clipboard.writeText(allPaths.join("\n")),
+      });
+    }
+    return items;
+  }
+
+  async function handleConfirmDiscardAll() {
+    const paths = unstagedPaths;
+    if (paths.length === 0) return;
+    try {
+      await runMutation<void>({
+        kind: "discard",
+        invoke: () => discardFiles(paths),
+        successToast: () => `Discarded changes in ${paths.length} files`,
+        failureToastPrefix: "Discard failed",
+      });
+    } catch {
+      // runMutation already surfaced the toast.
+    }
+    showDiscardAllConfirm = false;
+  }
 
   let undoInProgress = $state(false);
   /** Disabled when there is no HEAD commit to undo. */
@@ -385,7 +462,8 @@
       onclick={() => void setChangesTreeView(!$changesTreeView)}
     />
   </div>
-  <div class="file-lists">
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="file-lists" data-testid="changes-file-lists" oncontextmenu={openBlankContextMenu}>
     <ChangesList
       files={staged}
       stats={stagedStatMap}
@@ -563,6 +641,24 @@
     />
   {/if}
 </div>
+
+<ContextMenu
+  items={buildBlankMenuItems()}
+  x={blankMenuX}
+  y={blankMenuY}
+  visible={blankMenuVisible}
+  onClose={() => { blankMenuVisible = false; }}
+/>
+
+{#if showDiscardAllConfirm}
+  <ConfirmDialog
+    title={m.changes_menu_discard_confirm_title()}
+    message={m.changes_menu_discard_selected_confirm_message({ count: String(unstaged.length) })}
+    destructive={true}
+    onConfirm={handleConfirmDiscardAll}
+    onCancel={() => { showDiscardAllConfirm = false; }}
+  />
+{/if}
 
 <style>
   .staging-area {
