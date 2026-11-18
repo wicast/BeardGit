@@ -832,7 +832,17 @@
                   <span class="file-stat file-stat-add">+{stat.additions}</span>
                 {/if}
                 {#if stat.deletions > 0}
-                  <span class="file-stat file-stat-del">-{stat.deletions}</span>
+                  <!-- A rename can carry deletions too (content changed while
+                       the path moved). A plain "-N" there reads as "this file
+                       was deleted", so mark rename rows with "^N" instead.
+                       Gated strictly on the stat's own status so the caret
+                       can never leak onto modified/deleted/added rows. -->
+                  <span
+                    class="file-stat"
+                    class:file-stat-del={stat.status !== "renamed"}
+                    class:file-stat-renamed={stat.status === "renamed"}
+                  >{stat.status === "renamed" ? "^" : "-"}{stat.deletions}</span
+                  >
                 {/if}
               {/if}
             {/if}
@@ -1041,6 +1051,12 @@
 
   .file-stat-del {
     color: var(--accent-red);
+  }
+
+  /* Rename rows use "^N" for content lines removed during the rename. Keep
+   * it neutral rather than the deletion red — the file was moved, not deleted. */
+  .file-stat-renamed {
+    color: var(--text-secondary);
   }
 
   .file-stat-binary {
