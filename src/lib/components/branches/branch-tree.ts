@@ -4,6 +4,8 @@ export interface BranchTreeNode {
   fullPath: string;
   isFolder: boolean;
   isHead: boolean;
+  /** Branch tip equals HEAD's commit but is not the checked-out branch. */
+  atHead: boolean;
   isRemote: boolean;
   oid: string;
   /** Commits ahead of upstream. `0` for folders and untracked branches. */

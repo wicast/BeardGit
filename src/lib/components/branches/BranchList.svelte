@@ -44,7 +44,7 @@
    * Build a folder-tree from a flat branch list.
    * Branches with "/" in their name are nested under folder nodes.
    */
-  function buildTree(branchList: BranchInfo[]): TreeNode[] {
+  function buildTree(branchList: BranchInfo[], headOid: string | null): TreeNode[] {
     const root: TreeNode[] = [];
     const childMaps = new WeakMap<TreeNode[], Map<string, TreeNode>>();
 
@@ -74,6 +74,13 @@
             fullPath: isLeaf ? branch.name : parts.slice(0, i + 1).join("/"),
             isFolder: !isLeaf,
             isHead: isLeaf && branch.is_head,
+            // A different local branch sitting on the exact same commit as
+            // HEAD gets a distinct "same commit" marker, not the current-
+            // branch marker. `is_head` itself is already unique (the backend
+            // matches HEAD's branch name), so this can never flag the current
+            // branch — only look-alikes sharing its tip.
+            atHead:
+              isLeaf && !branch.is_head && headOid !== null && branch.oid === headOid,
             isRemote: branch.is_remote,
             oid: isLeaf ? branch.oid : "",
             ahead: isLeaf ? branch.ahead : 0,
@@ -124,8 +131,16 @@
     return $remoteBranches.filter((b) => b.name.toLowerCase().includes(needle));
   });
 
-  let localTree = $derived(buildTree(filteredLocal));
-  let remoteTree = $derived(buildTree(filteredRemote));
+  // Tip OID of the actually checked-out branch. `is_head` is unique after
+  // the backend fix, so exactly one local branch contributes here (none in a
+  // detached HEAD). Used to visually distinguish "current branch" from other
+  // branches that merely point at the same commit.
+  let headOid = $derived(
+    $branches.find((b) => b.is_head && !b.is_remote)?.oid ?? null,
+  );
+
+  let localTree = $derived(buildTree(filteredLocal, headOid));
+  let remoteTree = $derived(buildTree(filteredRemote, headOid));
 
   const localCollapsed = remembered(scoped("branches.localCollapsed"), false);
   const remoteCollapsed = remembered(scoped("branches.remoteCollapsed"), false);

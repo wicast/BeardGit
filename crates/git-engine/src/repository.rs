@@ -189,7 +189,17 @@ impl Repository {
     where
         F: FnMut(&git2::Repository, git2::Oid, git2::Oid) -> (usize, usize),
     {
-        let head_oid = self.repo.head().ok().and_then(|h| h.target());
+        // Identify the checked-out branch by the ref HEAD symbolically points
+        // at, NOT by its tip OID. Several local branches can share a tip (e.g.
+        // `git branch lookdev` on the current HEAD); comparing OIDs would mark
+        // every alias as HEAD. A detached HEAD is not a branch, so no branch is
+        // current in that case — matching git's own notion of "current branch".
+        let head_branch = self
+            .repo
+            .head()
+            .ok()
+            .filter(|h| h.is_branch())
+            .and_then(|h| h.shorthand().map(|s| s.to_owned()));
 
         // Snapshot config once so the "gone" check (rare branch below) can look
         // up `branch.<name>.merge` without re-opening a config snapshot per
@@ -214,8 +224,7 @@ impl Repository {
                 None => continue,
             };
 
-            let is_head =
-                head_oid.is_some_and(|h| (branch.get().target() == Some(h)) && !is_remote);
+            let is_head = !is_remote && head_branch.as_deref() == Some(name.as_str());
 
             // Tracking-status: only meaningful for local branches with
             // a configured upstream. `ahead_behind` yields the counts against
@@ -500,6 +509,45 @@ mod tests {
         assert!(local.upstream.is_none());
         assert_eq!(local.ahead, 0);
         assert_eq!(local.behind, 0);
+    }
+
+    /// Two local branches pointing at the same commit must not both be
+    /// reported as HEAD — only the branch HEAD symbolically points at is the
+    /// current branch. Regression: comparing each branch's tip OID to HEAD's
+    /// OID marked every alias branch as HEAD too, so the UI showed a "current
+    /// branch" dot on all of them.
+    #[test]
+    fn test_branches_single_head_when_branches_share_tip() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = create_repo_with_commit(&dir);
+        let git_repo = git2::Repository::open(&path).unwrap();
+
+        let current = git_repo.head().unwrap().shorthand().unwrap().to_string();
+        let head_oid = git_repo.head().unwrap().target().unwrap();
+
+        // Create an alias branch at exactly the same commit as HEAD.
+        let head_commit = git_repo.find_commit(head_oid).unwrap();
+        git_repo.branch("lookdev", &head_commit, false).unwrap();
+        drop(head_commit);
+        drop(git_repo);
+
+        let repo = Repository::open(&path).unwrap();
+        let branches = repo.branches().unwrap();
+
+        let head_branches: Vec<_> = branches.iter().filter(|b| b.is_head).collect();
+        assert_eq!(
+            head_branches.len(),
+            1,
+            "only one branch may be HEAD when two branches share a tip"
+        );
+        assert_eq!(
+            head_branches[0].name, current,
+            "HEAD must be the checked-out branch, not the alias"
+        );
+
+        let alias = branches.iter().find(|b| b.name == "lookdev").unwrap();
+        assert_eq!(alias.oid, head_branches[0].oid, "alias shares the tip OID");
+        assert!(!alias.is_head, "the alias branch must not be marked HEAD");
     }
 
     #[test]

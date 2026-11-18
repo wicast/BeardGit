@@ -80,9 +80,11 @@
     data-testid="branch-row-{node.fullPath.replace(/\//g, '-')}"
   >
     <span class="branch-icon nf">{"\uF418"}</span>
-    <span class="branch-name" class:head-name={node.isHead}>{node.name}</span>
+    <span class="branch-name" class:head-name={node.isHead} class:same-head-name={node.atHead}>{node.name}</span>
     {#if node.isHead}
       <span class="head-dot" title="Current branch"></span>
+    {:else if node.atHead}
+      <span class="same-head-dot" title="Points to the same commit as the current branch"></span>
     {/if}
     {#if node.ahead > 0}
       <span class="track-pip ahead" title="Ahead {node.ahead}">↑{node.ahead}</span>
@@ -190,12 +192,30 @@
     color: var(--text-primary);
   }
 
+  .branch-name.same-head-name {
+    color: var(--text-secondary);
+  }
+
   .head-dot {
     width: 6px;
     height: 6px;
     border-radius: 50%;
     background: var(--accent-primary);
     flex-shrink: 0;
+  }
+
+  /* Same-commit branch: hollow ring instead of the solid current-branch
+   * dot. Present but visually subordinate, so it reads as "on HEAD's commit"
+   * without being mistaken for the checked-out branch. */
+  .same-head-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    border: 1.5px solid var(--accent-primary);
+    box-sizing: border-box;
+    background: transparent;
+    flex-shrink: 0;
+    opacity: 0.75;
   }
 
   .branch-oid {
