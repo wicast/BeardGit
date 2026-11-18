@@ -32,6 +32,11 @@ pub enum SnapshotError {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Snapshot {
     pub head_oid: Option<String>,
+    /// Symbolic name HEAD points at (e.g. `refs/heads/main`), or `HEAD` when
+    /// detached. Two branches can share a tip, so a checkout between them
+    /// leaves `head_oid` unchanged — tracking the symbolic ref is the only way
+    /// to detect that HEAD moved to a different branch.
+    pub head_ref: Option<String>,
     pub refs: BTreeMap<String, String>,
     pub stash_count: usize,
     pub worktree_count: usize,
@@ -63,9 +68,16 @@ impl Snapshot {
             source,
         })?;
 
-        let head_oid = match repo.head() {
-            Ok(r) => r.target().map(|o| o.to_string()),
-            Err(_) => None, // unborn branch is fine
+        // Extract both fields within a tight scope so the `Reference` borrow
+        // is released before `stash_foreach` needs `&mut repo` below.
+        let (head_oid, head_ref) = {
+            let head = repo.head().ok();
+            let oid = head.as_ref().and_then(|r| r.target().map(|o| o.to_string()));
+            // The resolved name of HEAD (e.g. `refs/heads/lookdev`), not its
+            // OID. A detached HEAD resolves to `HEAD` itself — either way this
+            // captures "which ref is checked out", what the indicator shows.
+            let name = head.as_ref().and_then(|r| r.name().map(|n| n.to_string()));
+            (oid, name)
         };
 
         let mut refs = BTreeMap::new();
@@ -111,6 +123,7 @@ impl Snapshot {
 
         Ok(Self {
             head_oid,
+            head_ref,
             refs,
             stash_count,
             worktree_count,
@@ -128,7 +141,12 @@ impl Snapshot {
     /// unchanged, which would otherwise suppress the refresh.
     pub fn diff(&self, after: &Snapshot) -> MutationFlags {
         MutationFlags {
-            head_changed: self.head_oid != after.head_oid,
+            // HEAD moved if either the commit changed (commit/reset) OR the
+            // checked-out ref changed (checkout of another branch pointing at
+            // the SAME commit). The latter case has an unchanged head_oid but
+            // a different head_ref — capturing both is what makes the branch
+            // indicator update on `checkout -b` from the current HEAD.
+            head_changed: self.head_oid != after.head_oid || self.head_ref != after.head_ref,
             refs_changed: self.refs != after.refs,
             status_changed: self.status_fingerprint != after.status_fingerprint,
             stashes_changed: self.stash_count != after.stash_count,
@@ -169,6 +187,40 @@ mod tests {
         assert!(flags.refs_changed);
         // status should be clean after commit.
         assert!(flags.status_changed || !after.status_dirty);
+    }
+
+    /// Regression: creating and checking out a new branch from the current
+    /// HEAD leaves `head_oid` identical but moves the symbolic HEAD. Diff must
+    /// flip `head_changed` so the UI refreshes the branch indicator / title —
+    /// otherwise the name stays stale until a project switch or restart.
+    #[test]
+    fn diff_detects_head_move_between_branches_sharing_a_tip() {
+        let (_tmp, path) = create_repo_with_n_commits(1);
+        let before = Snapshot::capture(&path).unwrap();
+
+        // Create a second branch at the current HEAD and check it out — the
+        // commit (head_oid) does not change.
+        let repo = git2::Repository::open(&path).unwrap();
+        let oid = repo.head().unwrap().target().unwrap();
+        let commit = repo.find_commit(oid).unwrap();
+        repo.branch("lookdev", &commit, false).unwrap();
+        drop(commit);
+        repo.set_head("refs/heads/lookdev").unwrap();
+        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+            .unwrap();
+        drop(repo);
+
+        let after = Snapshot::capture(&path).unwrap();
+        assert_eq!(
+            before.head_oid, after.head_oid,
+            "the checkout must keep the same tip OID"
+        );
+        assert_ne!(
+            before.head_ref, after.head_ref,
+            "the symbolic HEAD must have moved to the new branch"
+        );
+        let flags = before.diff(&after);
+        assert!(flags.head_changed);
     }
 
     #[test]

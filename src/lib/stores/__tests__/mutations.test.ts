@@ -513,7 +513,55 @@ describe("startMutationListener", () => {
       },
     });
     expect(saveCurrentSnapshot).toHaveBeenCalledWith("/repo");
+    // Title refresh now awaits the head-driven repoInfo refresh before
+    // reading head_branch, so let that microtask chain drain first.
+    await flushAsync();
     expect(refreshActiveTitleBar).toHaveBeenCalled();
+  });
+
+  it("waits for the head-driven repoInfo refresh before refreshing the title", async () => {
+    // Regression: a `checkout -b` off the current HEAD moves only the
+    // symbolic HEAD (head_ref), leaving head_oid untouched. The status-bar
+    // pill / OS title read `repoInfo.head_branch`, so refreshing them before
+    // refreshRepoInfo resolves paints the OLD branch name — the bug where the
+    // indicator only updated after a project switch or restart.
+    let resolveRepoInfo!: () => void;
+    refreshRepoInfo.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveRepoInfo = resolve;
+        }),
+    );
+
+    let handler: ((ev: unknown) => void) | null = null;
+    listenMock.mockImplementation(async (_n, cb) => {
+      handler = cb as (ev: unknown) => void;
+      return () => {};
+    });
+    await startMutationListener();
+    handler!({
+      payload: {
+        project_path: "/repo",
+        kind: { type: "checkout" },
+        flags: {
+          refs_changed: true,
+          head_changed: true,
+          status_changed: false,
+          stashes_changed: false,
+          worktrees_changed: false,
+          remotes_changed: false,
+        },
+      },
+    });
+
+    await flushAsync();
+    // repoInfo refresh is in flight; the title refresh must still be waiting.
+    expect(refreshRepoInfo).toHaveBeenCalled();
+    expect(refreshActiveTitleBar).not.toHaveBeenCalled();
+
+    resolveRepoInfo();
+    await flushAsync();
+    expect(refreshActiveTitleBar).toHaveBeenCalledTimes(1);
   });
 
   it("does not refresh the title when only worktrees_changed fires", async () => {

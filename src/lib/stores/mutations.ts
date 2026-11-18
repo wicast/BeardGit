@@ -97,6 +97,12 @@ async function refreshGraphAfterHeadMove(): Promise<void> {
 }
 
 export function dispatchRefresh(flags: MutationFlags, path?: string): void {
+  // Tracks the head-driven repoInfo refresh so the title-bar/status-bar
+  // refresh at the end can wait for it. Both surfaces read
+  // `repoInfo.head_branch` synchronously; without this ordering a checkout
+  // to a new branch (same tip, new symbolic HEAD) leaves the OLD branch name
+  // on screen until some later, unrelated refresh happens to fix it.
+  let headRefresh: Promise<void> | null = null;
   if (flags.head_changed || flags.refs_changed) {
     // HEAD moved (commit, checkout, reset, rebase, merge) OR refs changed
     // (create/delete/rename, fetch/push). Both affect the branch list
@@ -109,7 +115,8 @@ export function dispatchRefresh(flags: MutationFlags, path?: string): void {
     // `refreshGraphAfterHeadMove` owns the repoInfo refresh here: it has to
     // read the old head before overwriting it, so calling `refreshRepoInfo`
     // again alongside it would only duplicate the IPC.
-    void refreshGraphAfterHeadMove();
+    headRefresh = refreshGraphAfterHeadMove();
+    void headRefresh;
     void refreshBranches();
     void loadReflog();
   }
@@ -164,10 +171,15 @@ export function dispatchRefresh(flags: MutationFlags, path?: string): void {
       flags.stashes_changed)
   ) {
     void saveCurrentSnapshot(path);
-    // The OS window title carries the same ↑/↓/+/!/?/⚑ segment that
-    // `saveCurrentSnapshot` rebuilds the snapshot for; keep them in
-    // lockstep so both surfaces converge on the same data.
-    void refreshActiveTitleBar();
+    // The OS window title (and the status-bar pill that mirrors it) carry
+    // the branch name from `repoInfo.head_branch`. Wait for the head-driven
+    // refresh above before reading it — otherwise a `checkout -b` from the
+    // current HEAD, which moves only the symbolic HEAD, paints the stale
+    // branch name until a project switch or restart forces a fresh read.
+    void (async () => {
+      if (headRefresh) await headRefresh;
+      await refreshActiveTitleBar();
+    })();
   }
 }
 
