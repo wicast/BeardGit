@@ -73,19 +73,41 @@ impl Repository {
                     ],
                 ),
             ] {
-                let Some(status) = candidates
-                    .iter()
-                    .find(|(flag, _)| s.contains(*flag))
-                    .map(|(_, name)| *name)
-                else {
+                // A rewrite-style rename (content similarity < 100%, e.g. a
+                // renamed Unity scene whose serialized contents changed) makes
+                // libgit2 set BOTH `*_RENAMED` and `*_MODIFIED` on the entry —
+                // unlike an exact-content rename, which sets only `*_RENAMED`.
+                // Checking the candidates in array order would hit `modified`
+                // first and surface the OLD path with an `M` marker, hiding the
+                // rename entirely. Rename is the more specific verdict, so let
+                // it win whenever its flag is present.
+                let rename_flag = if is_staged {
+                    git2::Status::INDEX_RENAMED
+                } else {
+                    git2::Status::WT_RENAMED
+                };
+                let status = if s.contains(rename_flag) {
+                    Some("renamed")
+                } else {
+                    candidates
+                        .iter()
+                        .find(|(flag, _)| s.contains(*flag))
+                        .map(|(_, name)| *name)
+                };
+                let Some(status) = status else {
                     continue;
                 };
 
-                // For renames libgit2's `entry.path()` is often the *old* path;
-                // the destination lives on the rename delta. Surface the new
-                // path so the Changes view lists the file as it exists now,
-                // with a single `R` row instead of a delete on the old path.
-                let path = if status == "renamed" {
+                // For renames libgit2's `entry.path()` is the *old* path; the
+                // destination lives on the rename delta. Surface the new path
+                // whenever this entry carried a rename flag — including a
+                // staged rename the user then edited again, where the workdir
+                // side reports `modified` but still refers to the old path via
+                // `entry.path()`. That yields a single `R` row under the new
+                // name instead of a stale `M` row under the old one.
+                let is_rename = s.contains(git2::Status::INDEX_RENAMED)
+                    || s.contains(git2::Status::WT_RENAMED);
+                let path = if is_rename {
                     let delta = if is_staged {
                         entry.head_to_index()
                     } else {
@@ -494,6 +516,61 @@ mod tests {
                 .iter()
                 .any(|s| s.path == "existing.txt" && s.status == "deleted"),
             "old path must not appear as a separate deleted entry, got {statuses:?}"
+        );
+    }
+
+    /// A rename whose content was also edited (similarity < 100%) is the case
+    /// libgit2 flags as BOTH `INDEX_RENAMED` and `INDEX_MODIFIED`. It must be
+    /// reported as a single `renamed` row at the NEW path — not a `modified`
+    /// row at the old path. This mirrors a renamed Unity scene whose
+    /// serialized YAML changed along with the filename.
+    #[test]
+    fn test_file_statuses_rewrite_rename_is_renamed_at_new_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let git_repo = git2::Repository::init(dir.path()).unwrap();
+        git_repo
+            .config()
+            .unwrap()
+            .set_str("core.autocrlf", "false")
+            .unwrap();
+        let sig = git2::Signature::now("Test", "test@test.com").unwrap();
+
+        // Many identical lines so a couple of edits keep similarity > 50%
+        // (detected as rename) but < 100% (also flagged modified).
+        let original: String = (0..40)
+            .map(|i| format!("line {i}: some stable serialized content\n"))
+            .collect();
+        fs::write(dir.path().join("old.txt"), &original).unwrap();
+        let mut index = git_repo.index().unwrap();
+        index.add_path(Path::new("old.txt")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = git_repo.find_tree(tree_id).unwrap();
+        git_repo
+            .commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        drop(tree);
+
+        // Rename + a small edit to the content.
+        let mut edited = original.clone();
+        edited.push_str("an extra trailing line\n");
+        fs::remove_file(dir.path().join("old.txt")).unwrap();
+        fs::write(dir.path().join("new.txt"), &edited).unwrap();
+        drop(git_repo);
+
+        let repo = Repository::open(dir.path()).unwrap();
+        repo.stage_all().unwrap();
+        let statuses = repo.file_statuses().unwrap();
+
+        assert!(
+            statuses.iter().any(|s| s.path == "new.txt"
+                && s.status == "renamed"
+                && s.is_staged),
+            "rewrite rename must be a single renamed row at new path, got {statuses:?}"
+        );
+        assert!(
+            !statuses.iter().any(|s| s.path == "old.txt"),
+            "old path must not appear, got {statuses:?}"
         );
     }
 
