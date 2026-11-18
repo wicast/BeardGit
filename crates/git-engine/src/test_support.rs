@@ -592,6 +592,56 @@ pub fn create_repo_with_diverged_branches() -> (TempDir, PathBuf) {
     (dir, path)
 }
 
+/// A clone whose remote-tracking branch has moved ahead of the local one.
+///
+/// `git clone` configures the upstream (`master` → `origin/master`), then a
+/// commit lands on the remote and a plain `git fetch` brings it into
+/// `refs/remotes/origin/master` only. That is the state a user sits in after
+/// Fetch without Pull — the exact case that decides what scoping the graph to
+/// `master` means: the local end of the branch, or the whole line of work.
+///
+/// Returns `(TempDir, work_path)`; the origin repo lives beside the clone
+/// under the same temp dir.
+pub fn create_repo_with_diverged_upstream() -> (TempDir, PathBuf) {
+    let dir = TempDir::new().expect("tempdir");
+    let root = dir.path();
+
+    let origin = root.join("origin");
+    std::fs::create_dir(&origin).expect("create origin");
+    run_git(&origin, &["init", "-q", "--initial-branch=master"]);
+    run_git(&origin, &["config", "user.email", "test@example.com"]);
+    run_git(&origin, &["config", "user.name", "Test User"]);
+    run_git(&origin, &["config", "core.autocrlf", "false"]);
+    for i in 0..2 {
+        std::fs::write(origin.join(format!("base{i}.txt")), "base\n").expect("write base");
+        run_git(&origin, &["add", "."]);
+        run_git(&origin, &["commit", "-qm", &format!("base {i}")]);
+    }
+
+    let work = root.join("work");
+    run_git(
+        root,
+        &[
+            "clone",
+            "-q",
+            origin.to_str().unwrap(),
+            work.to_str().unwrap(),
+        ],
+    );
+    run_git(&work, &["config", "user.email", "test@example.com"]);
+    run_git(&work, &["config", "user.name", "Test User"]);
+    run_git(&work, &["config", "core.autocrlf", "false"]);
+
+    // A commit the clone has not pulled, and the fetch that only updates the
+    // remote-tracking ref.
+    std::fs::write(origin.join("remote-only.txt"), "remote\n").expect("write remote-only");
+    run_git(&origin, &["add", "."]);
+    run_git(&origin, &["commit", "-qm", "remote only"]);
+    run_git(&work, &["fetch", "-q", "origin"]);
+
+    (dir, work)
+}
+
 /// Helper: shell out to `git` in `repo_path` and panic on failure.
 pub fn run_git(repo_path: &Path, args: &[&str]) {
     let status = std::process::Command::new("git")

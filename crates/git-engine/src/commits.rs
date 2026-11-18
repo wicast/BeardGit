@@ -181,9 +181,36 @@ pub struct CommitWalkOptions<'a> {
     /// branch so the walk covers the union of their reachable sets — the
     /// basis of the graph view's multi-branch filter.
     ///
+    /// A local entry additionally walks from its upstream tracking tip, so a
+    /// branch that is behind its remote still shows the commits a fetch
+    /// brought down — see [`Repository::scope_tips`].
+    ///
     /// Errors if *any* named branch does not exist, so a stale selection
     /// surfaces instead of silently rendering a partial graph.
     pub branches: &'a [String],
+}
+
+/// Push `oid` into a scope's tip set unless an equal tip is already there.
+///
+/// Deduplicating is not a micro-optimisation: a branch in sync with its
+/// upstream resolves to the same commit twice, and
+/// [`Repository::supports_anchored_pagination`] reads that *count* — without
+/// the dedupe every tracked branch would look like a two-branch selection and
+/// lose the O(limit) deep-scroll path.
+fn push_tip(tips: &mut Vec<git2::Oid>, oid: git2::Oid) {
+    if !tips.contains(&oid) {
+        tips.push(oid);
+    }
+}
+
+/// The tip of `branch`'s configured upstream, when it has one and it resolves.
+///
+/// `None` covers every way this can be a non-question: no
+/// `branch.<name>.remote`/`merge` configured, the remote-tracking ref deleted
+/// (`upstream_gone`), or a symbolic upstream with no target.
+fn upstream_tip(repo: &git2::Repository, branch: &str) -> Option<git2::Oid> {
+    let local = repo.find_branch(branch, git2::BranchType::Local).ok()?;
+    local.upstream().ok()?.get().target()
 }
 
 impl Repository {
@@ -229,22 +256,12 @@ impl Repository {
                 }
             }
         } else {
-            // Branch-scoped: walk only from the selected branch tips. Try
-            // local, then remote — same resolution as `branch_commits`.
-            // Several entries push several tips; libgit2's revwalk then
-            // yields the union of their reachable sets in one
-            // topological+time stream, which is exactly the multi-branch
-            // graph view.
-            for branch in options.branches {
-                let reference = repo
-                    .find_reference(&format!("refs/heads/{branch}"))
-                    .or_else(|_| repo.find_reference(&format!("refs/remotes/{branch}")))?;
-                let oid = reference
-                    .target()
-                    .or_else(|| reference.resolve().ok().and_then(|r| r.target()))
-                    .ok_or_else(|| {
-                        GitError::Git(git2::Error::from_str("Symbolic ref without target"))
-                    })?;
+            // Branch-scoped: walk only from the tips the selection resolves
+            // to — one per selected branch, plus the upstream of each local
+            // one. Several tips make libgit2's revwalk yield the union of
+            // their reachable sets in one topological+time stream, which is
+            // exactly the multi-branch graph view.
+            for oid in self.scope_tips(options.branches)? {
                 revwalk.push(oid)?;
             }
         }
@@ -265,6 +282,55 @@ impl Repository {
         }
 
         Ok(commits)
+    }
+
+    /// Resolve a branch-scoped selection into the tips a walk starts from.
+    ///
+    /// Each entry is tried as a local branch, then as a remote-tracking one —
+    /// the same order as [`Repository::branch_commits`], and what lets the
+    /// scope list mix `main` with `origin/main`. A *listed* entry that
+    /// resolves to neither is an error: the selection came from the UI, and a
+    /// stale one should surface rather than silently render half a graph.
+    ///
+    /// A local entry additionally contributes its upstream tracking tip.
+    /// Scoping to `feat/x` is a statement about that line of work, not about
+    /// which end of it the local copy has caught up with, so commits a fetch
+    /// landed in `origin/feat/x` — and nothing pulled — still belong in the
+    /// picture. Two properties the callers depend on:
+    ///
+    ///   * Tips are deduplicated by OID, so a branch in sync with its remote
+    ///     (the ordinary case) still yields exactly one tip — which is what
+    ///     keeps the anchored pagination fast path available to it. The
+    ///     persistent layout cache is untouched either way: it decides
+    ///     cacheability from the *selection*, which stays one entry per branch
+    ///     the user picked.
+    ///   * An upstream that does not resolve is skipped, not raised.
+    ///     `upstream_gone` is a normal repo state, and failing the whole walk
+    ///     over a bonus tip would blank the canvas.
+    fn scope_tips(&self, branches: &[String]) -> Result<Vec<git2::Oid>, GitError> {
+        let repo = self.inner();
+        let mut tips: Vec<git2::Oid> = Vec::with_capacity(branches.len());
+        for branch in branches {
+            let reference = repo
+                .find_reference(&format!("refs/heads/{branch}"))
+                .or_else(|_| repo.find_reference(&format!("refs/remotes/{branch}")))?;
+            let oid = reference
+                .target()
+                .or_else(|| reference.resolve().ok().and_then(|r| r.target()))
+                .ok_or_else(|| {
+                    GitError::Git(git2::Error::from_str("Symbolic ref without target"))
+                })?;
+            push_tip(&mut tips, oid);
+
+            if reference
+                .name()
+                .is_some_and(|name| name.starts_with("refs/heads/"))
+                && let Some(upstream) = upstream_tip(repo, branch)
+            {
+                push_tip(&mut tips, upstream);
+            }
+        }
+        Ok(tips)
     }
 
     /// Walk commits that follow `anchor` in the full history walk, without
@@ -356,10 +422,12 @@ impl Repository {
     ///   the anchor, so a non-first-parent walk diverges even on a single-head
     ///   repo. First-parent simplification collapses the graph to one line, where
     ///   the tail is always the anchor's ancestry.
-    /// - **The walk must push a single tip.** A branch-scoped walk pushes one
-    ///   ref per selected branch, so it is single-tip only when exactly one
-    ///   branch is selected; an all-refs walk is single-tip only when every
-    ///   ref resolves to the same commit. With several tips, each contributes
+    /// - **The walk must push a single tip.** A branch-scoped walk pushes the
+    ///   tip of each selected branch plus the upstream of each local one (see
+    ///   [`Repository::scope_tips`]), so one selected branch is single-tip
+    ///   only while it is in sync with its remote; a branch behind its remote
+    ///   walks two tips. An all-refs walk is single-tip only when every ref
+    ///   resolves to the same commit. With several tips, each contributes
     ///   its own first-parent chain and sibling tips interleave into the tail.
     ///
     /// Returns `Ok(false)` (→ use the offset walk) for every other shape. This is
@@ -373,14 +441,13 @@ impl Repository {
         if !options.first_parent {
             return Ok(false);
         }
-        // Branch-scoped: exactly one selected branch pushes exactly one tip.
-        // Two or more push several tips, whose first-parent chains interleave
-        // into the tail — the anchored walk would then diverge from the offset
-        // walk, so the fast path must be declined.
-        match options.branches.len() {
-            1 => return Ok(true),
-            0 => {} // all-refs walk — fall through to the single-tip check
-            _ => return Ok(false),
+        // Branch-scoped: the resolved tip set decides, not the selection
+        // length — one local branch drags its upstream tip along unless the
+        // two already agree. Two tips mean two first-parent chains
+        // interleaving into the tail, so the anchored walk would diverge from
+        // the offset walk and the fast path must be declined.
+        if !options.branches.is_empty() {
+            return Ok(self.scope_tips(options.branches)?.len() == 1);
         }
         // All-refs walk: single-tip only when every pushed ref target is the
         // same commit. Mirrors the push set of `walk_commits_with_options`
@@ -891,6 +958,121 @@ mod tests {
             .unwrap();
         assert_eq!(side_scoped.len(), 5);
         assert_eq!(side_scoped[0].summary, "side work");
+    }
+
+    #[test]
+    fn test_walk_commits_branch_scoped_includes_unpulled_upstream_commits() {
+        let (_dir, path) = crate::test_support::create_repo_with_diverged_upstream();
+        let repo = Repository::open(&path).unwrap();
+
+        let scoped = repo
+            .walk_commits_with_options(
+                0,
+                100,
+                CommitWalkOptions {
+                    branches: &["master".to_string()],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        // Local `master` stops at "base 1"; a fetch put "remote only" into
+        // `origin/master` and nothing pulled it. Scoping to the branch walks
+        // the line of work, not whichever end the local copy reached.
+        assert_eq!(scoped.len(), 3, "fetched commits belong in the scope");
+        assert!(scoped.iter().any(|c| c.summary == "remote only"));
+
+        // Naming the remote-tracking branch is the same question, so it must
+        // give the same answer — otherwise the two entries would be a user
+        // choice rather than a view of one branch.
+        let by_remote = repo
+            .walk_commits_with_options(
+                0,
+                100,
+                CommitWalkOptions {
+                    branches: &["origin/master".to_string()],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            by_remote.iter().map(|c| c.oid.clone()).collect::<Vec<_>>(),
+            scoped.iter().map(|c| c.oid.clone()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_walk_commits_branch_scoped_synced_upstream_stays_one_tip() {
+        let (_dir, path) = crate::test_support::create_repo_with_diverged_upstream();
+        // Pull, so the upstream tip and the local tip become one commit.
+        crate::test_support::run_git(&path, &["merge", "-q", "--ff-only", "origin/master"]);
+        let repo = Repository::open(&path).unwrap();
+
+        let branches = ["master".to_string()];
+        let scoped = repo
+            .walk_commits_with_options(
+                0,
+                100,
+                CommitWalkOptions {
+                    branches: &branches,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(scoped.len(), 3);
+
+        // The dedupe is what keeps an in-sync branch — the ordinary case —
+        // eligible for the anchored fast path. Without it every tracked branch
+        // would look like a two-branch selection and lose the pagination.
+        assert!(
+            repo.supports_anchored_pagination(CommitWalkOptions {
+                first_parent: true,
+                branches: &branches,
+            })
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn test_walk_commits_branch_scoped_diverged_upstream_declines_anchor() {
+        let (_dir, path) = crate::test_support::create_repo_with_diverged_upstream();
+        let repo = Repository::open(&path).unwrap();
+
+        // Two tips push two first-parent chains that interleave into the tail,
+        // so the anchored walk would not match the offset walk.
+        assert!(
+            !repo
+                .supports_anchored_pagination(CommitWalkOptions {
+                    first_parent: true,
+                    branches: &["master".to_string()],
+                })
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn test_walk_commits_branch_scoped_survives_deleted_upstream() {
+        let (_dir, path) = crate::test_support::create_repo_with_diverged_upstream();
+        // The state behind `upstream_gone`: config still names origin/master,
+        // the ref is gone.
+        crate::test_support::run_git(&path, &["update-ref", "-d", "refs/remotes/origin/master"]);
+        let repo = Repository::open(&path).unwrap();
+
+        let scoped = repo
+            .walk_commits_with_options(
+                0,
+                100,
+                CommitWalkOptions {
+                    branches: &["master".to_string()],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        // A bonus tip that cannot resolve must not fail the walk — that would
+        // blank the canvas over a bookkeeping detail.
+        assert_eq!(scoped.len(), 2);
+        assert!(!scoped.iter().any(|c| c.summary == "remote only"));
     }
 
     #[test]
