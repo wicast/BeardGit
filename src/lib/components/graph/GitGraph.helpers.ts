@@ -38,3 +38,46 @@ export function graphRepoChangeAction(
   if (nextPath === null || nextPath === prevPath) return "none";
   return hasViewport ? "restore" : "reset";
 }
+
+/**
+ * Filter the branch scope picker's list by the search box.
+ *
+ * Case-insensitive substring on the branch name — the same rule the Branches
+ * sidebar applies, so "the thing I type to find a branch" behaves identically
+ * in both places. An empty (or whitespace-only) query returns the caller's
+ * array untouched: the picker's ordering — current branch first, then
+ * alphabetical — is decided by the component and must survive filtering.
+ */
+export function filterScopeBranches<T extends { name: string }>(
+  branches: T[],
+  query: string,
+): T[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return branches;
+  return branches.filter((b) => b.name.toLowerCase().includes(needle));
+}
+
+/**
+ * Decide whether a window-level click should dismiss an open dropdown.
+ *
+ * The `isConnected` test is the non-obvious half, and it exists because of
+ * when Svelte commits. A component event handler flushes its DOM updates
+ * before the same click finishes bubbling to the window (`TasksPopover` had
+ * to learn this the hard way too). So a control that removes itself in
+ * reaction to being clicked — the scope picker's clear button, whose `{#if
+ * value}` goes false on the click — is gone by the time the listener asks
+ * where the click landed, and `root.contains(target)` answers "outside" for
+ * something that was unmistakably inside. Without this guard, clearing the
+ * filter closes the whole picker.
+ */
+export function shouldDismissDropdown(
+  root: Node | null | undefined,
+  target: EventTarget | null,
+): boolean {
+  if (!root) return false;
+  if (!(target instanceof Node)) return true;
+  // Already off the DOM: it removed itself while handling this very click,
+  // which means it was inside the menu a moment ago.
+  if (!target.isConnected) return false;
+  return !root.contains(target);
+}

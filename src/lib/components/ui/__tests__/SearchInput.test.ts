@@ -108,4 +108,15 @@ describe("SearchInput", () => {
     await fireEvent.keyDown(window, { key: "k", ctrlKey: true });
     expect(document.activeElement).toBe(input);
   });
+
+  it("takes focus on mount only when asked to", () => {
+    // The branch scope picker mounts this inside a menu that just opened on a
+    // click; making the user click the box as well defeats the point.
+    const focused = render(SearchInput, { props: { autofocus: true } });
+    expect(document.activeElement).toBe(focused.getByTestId("bg-search-input"));
+    cleanup();
+
+    const plain = render(SearchInput, { props: {} });
+    expect(document.activeElement).not.toBe(plain.getByTestId("bg-search-input"));
+  });
 });

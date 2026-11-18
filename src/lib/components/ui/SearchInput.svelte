@@ -29,6 +29,12 @@
     /** Debounce for the search event in ms. Default 150. */
     debounceMs?: number;
     /**
+     * Focus the input as soon as it mounts, for fields that only exist while
+     * the user is using them — a dropdown filter box nobody wants to click
+     * into first.
+     */
+    autofocus?: boolean;
+    /**
      * Called with the query after the debounce window elapses and when
      * the clear button resets the value (fired immediately with "").
      */
@@ -39,6 +45,7 @@
     value = $bindable(""),
     placeholder = "",
     debounceMs = 150,
+    autofocus = false,
     onSearch,
   }: Props = $props();
 
@@ -76,6 +83,7 @@
   }
 
   onMount(() => {
+    if (autofocus) inputEl?.focus();
     window.addEventListener("keydown", handleGlobalKey);
     return () => {
       window.removeEventListener("keydown", handleGlobalKey);

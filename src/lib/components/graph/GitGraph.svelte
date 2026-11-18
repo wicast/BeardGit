@@ -21,7 +21,12 @@
   import { runMutation } from "../../api/runMutation";
   import { openCreateBranchDialog } from "../../stores/createBranchDialog";
   import { openCompare } from "../../stores/compare";
-  import { buildCreateBranchSource, graphRepoChangeAction } from "./GitGraph.helpers";
+  import {
+    buildCreateBranchSource,
+    filterScopeBranches,
+    graphRepoChangeAction,
+    shouldDismissDropdown,
+  } from "./GitGraph.helpers";
   import { save } from "@tauri-apps/plugin-dialog";
   import RebaseEditor from "../rebase/RebaseEditor.svelte";
   import { debounce } from "../../utils/debounce";
@@ -39,7 +44,7 @@
   import { addToast } from "../../stores/toast";
   import { getErrorMessage } from "$lib/api/errors";
   import * as m from "$lib/paraglide/messages";
-  import { Button, Checkbox } from "$lib/components/ui";
+  import { Button, Checkbox, SearchInput } from "$lib/components/ui";
   import { remembered, scoped } from "$lib/stores/viewMemory";
 
   // Column visibility state
@@ -57,6 +62,19 @@
   );
   /** Branches currently scoped into the graph. Empty = all refs. */
   let scopeSelection = $derived($graphViewOptions.branches ?? []);
+  /**
+   * Filter box query for the scope picker. A repo carrying dozens of
+   * `backup/…` and `feat-codex-v2-…` branches made the flat list unusable, so
+   * the picker now filters as you type. Cleared whenever the menu closes: the
+   * next open should show the whole list rather than hiding the branch the
+   * user came back for.
+   */
+  let scopeQuery = $state("");
+  let scopeMatches = $derived(filterScopeBranches(scopeBranches, scopeQuery));
+
+  $effect(() => {
+    if (!showBranchMenu) scopeQuery = "";
+  });
   /** Trigger label: "All branches" / a lone branch / a count of branches. */
   let scopeLabel = $derived(
     scopeSelection.length === 0
@@ -90,6 +108,23 @@
     e.preventDefault();
     e.stopPropagation();
     void toggleBranchScope(name);
+  }
+  /**
+   * Keyboard path for the filter box: Enter scopes to the top match — typing a
+   * branch name into this box is done in order to pick it — and Escape closes
+   * the picker like any other menu. Enter is ignored with an empty box so it
+   * cannot silently scope the graph to whatever sorts first.
+   */
+  function onScopeMenuKeydown(e: KeyboardEvent) {
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      showBranchMenu = false;
+      return;
+    }
+    if (e.key === "Enter" && scopeQuery.trim()) {
+      const first = scopeMatches[0];
+      if (first) void pickBranchScope(first.name);
+    }
   }
   let columnToggleEl: HTMLDivElement | undefined = $state();
 
@@ -942,8 +977,14 @@
   }
 
   function handleWindowClick(e: MouseEvent) {
-    if (showColumnMenu && columnToggleEl && !columnToggleEl.contains(e.target as Node)) {
+    if (showColumnMenu && shouldDismissDropdown(columnToggleEl, e.target)) {
       showColumnMenu = false;
+    }
+    // The scope picker used to be dismissible only by choosing a branch. With
+    // a filter box in it, clicking away is the natural exit — and the one
+    // people reach for when the search finds nothing.
+    if (showBranchMenu && shouldDismissDropdown(branchToggleEl, e.target)) {
+      showBranchMenu = false;
     }
   }
 
@@ -1096,15 +1137,29 @@
           onclick={() => (showBranchMenu = !showBranchMenu)}
         >{scopeLabel}</Button>
         {#if showBranchMenu}
-          <div class="column-dropdown branch-dropdown" role="menu">
+          <div
+            class="column-dropdown branch-dropdown"
+            role="menu"
+            tabindex="-1"
+            onkeydown={onScopeMenuKeydown}
+          >
+            <div class="branch-search">
+              <SearchInput
+                bind:value={scopeQuery}
+                autofocus
+                placeholder={m.graph_branch_search_placeholder()}
+              />
+            </div>
             <div class="branch-dropdown-hint">{m.graph_branch_multiselect_hint()}</div>
-            <button
-              type="button"
-              class="branch-option"
-              class:selected={scopeSelection.length === 0}
-              onclick={() => void pickBranchScope(undefined)}
-            >{m.graph_all_branches()}</button>
-            {#each scopeBranches as b (b.name)}
+            {#if !scopeQuery.trim()}
+              <button
+                type="button"
+                class="branch-option"
+                class:selected={scopeSelection.length === 0}
+                onclick={() => void pickBranchScope(undefined)}
+              >{m.graph_all_branches()}</button>
+            {/if}
+            {#each scopeMatches as b (b.name)}
               <button
                 type="button"
                 class="branch-option"
@@ -1114,6 +1169,14 @@
                 onclick={() => void pickBranchScope(b.name)}
                 oncontextmenu={(e) => onBranchContextMenu(e, b.name)}
               >{b.name}</button>
+            {:else}
+              <!-- Only while filtering: a repo with no local branches at all
+                   would otherwise read "no branch matches \"\"". -->
+              {#if scopeQuery.trim()}
+                <div class="branch-empty" data-testid="graph-branch-no-match">
+                  {m.graph_branch_no_match({ query: scopeQuery.trim() })}
+                </div>
+              {/if}
             {/each}
           </div>
         {/if}
@@ -1255,6 +1318,23 @@
     max-height: 320px;
     overflow-y: auto;
     min-width: 180px;
+  }
+
+  /* Sticky because the list it filters is exactly the case that scrolls:
+   * dozens of branches, which is why the box exists. Keeps the query visible
+   * while the matches move under it. */
+  .branch-search {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--bg-toolbar);
+    padding: 2px 8px 8px;
+  }
+
+  .branch-empty {
+    padding: 5px 10px;
+    font-size: var(--font-size-sm);
+    color: var(--text-muted);
   }
 
   /* Explains the two gestures before the user has to discover them. Sits

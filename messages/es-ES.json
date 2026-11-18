@@ -1366,6 +1366,8 @@
   "graph_all_branches": "Todas las ramas",
   "graph_branches_selected": "{count} ramas",
   "graph_branch_multiselect_hint": "Clic para elegir una · clic derecho para añadir más",
+  "graph_branch_search_placeholder": "Buscar ramas…",
+  "graph_branch_no_match": "Ninguna rama coincide con \"{query}\"",
   "graph_branch_scope_tooltip": "Limitar el grafo a las ramas seleccionadas — clic derecho para elegir varias",
   "compare_command": "Comparar refs…",
   "compare_with_head": "Comparar con HEAD…",

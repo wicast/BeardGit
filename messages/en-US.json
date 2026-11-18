@@ -1366,6 +1366,8 @@
   "graph_all_branches": "All branches",
   "graph_branches_selected": "{count} branches",
   "graph_branch_multiselect_hint": "Click to select one · right-click to add more",
+  "graph_branch_search_placeholder": "Search branches…",
+  "graph_branch_no_match": "No branch matches \"{query}\"",
   "graph_branch_scope_tooltip": "Limit the graph to selected branches — right-click to pick several",
   "compare_command": "Compare refs…",
   "compare_with_head": "Compare with HEAD…",
