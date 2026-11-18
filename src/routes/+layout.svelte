@@ -17,6 +17,7 @@
     loadDiffLineWrapping,
   } from "$lib/stores/diffSettings";
   import ToastContainer from "$lib/components/ui/ToastContainer.svelte";
+  import BusyDialog from "$lib/components/ui/BusyDialog.svelte";
   let { children } = $props();
 
   // Disable default browser context menu globally
@@ -70,6 +71,12 @@
 </div>
 
 <ToastContainer />
+<!--
+  One instance for the whole app: it reads the *active* project's busy slice,
+  so a slow git operation shows its notice only in the tab that started it and
+  switching tabs follows the user rather than the running operation.
+-->
+<BusyDialog />
 
 <style>
   div {

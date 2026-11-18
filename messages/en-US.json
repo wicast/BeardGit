@@ -1393,5 +1393,11 @@
   "compare_load_more": "Load more",
   "compare_files_title": "Changed Files ({count})",
   "compare_no_files": "No file changes.",
-  "compare_diff_error": "Could not load file diff"
+  "compare_diff_error": "Could not load file diff",
+  "busy_title": "Operation in progress",
+  "busy_op_running": "Running {op}…",
+  "busy_ops_queued": "{count} more operation(s) queued on this repository",
+  "busy_elapsed": "{seconds}s",
+  "busy_hint": "Git is still reading and writing {project}. Large repositories can take a while — the operation will finish on its own.",
+  "busy_run_in_background": "Run in background"
 }

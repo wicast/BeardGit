@@ -14,6 +14,10 @@
  *   - Ad-hoc task creation on failure for *non-tracked* mutations so
  *     the "See details" toast action has a row to open in the Tasks
  *     popover.
+ *   - A slow-operation notice for local git commands that outlive
+ *     `SLOW_OP_MS` (see {@link busyOps}). Suppressed for mutations the
+ *     status-bar Tasks slot already reports (`trackAsTask`) and for
+ *     network-bound kinds (requests, AI, forge), which filter by kind.
  *
  * Refresh is **not** driven from here — the mutation-events crate on
  * the Rust side emits a `project-mutated` event after every command
@@ -25,9 +29,12 @@
  * visible to the caller — important for commands that return an OID
  * or a `TaskId`.
  */
+import { get } from "svelte/store";
 import { addToast } from "$lib/stores/toast";
 import { taskRunner } from "$lib/stores/taskRunner";
 import { openTasksPopover } from "$lib/stores/tasksPopover";
+import { activeRepoPath } from "$lib/stores/repo-state";
+import { beginBusy, endBusy, isSlowOpKind } from "$lib/stores/busyOps";
 import { firstErrorLine, getErrorCode, errorCodeMessage } from "$lib/api/errors";
 
 /** Options passed to {@link runMutation}. */
@@ -52,11 +59,31 @@ export interface MutationOpts<T> {
    * for TS-only mutations (e.g. future headless AI commands).
    */
   trackAsTask?: boolean;
+  /**
+   * Pass `false` to opt out of the slow-operation notice, for mutations whose
+   * own surface already reports progress. Git kinds are additionally filtered
+   * by {@link isSlowOpKind}, so this is only needed for non-git callers.
+   */
+  busyNotice?: false;
 }
 
 /** Run a mutation with the standard toast + task policy. */
 export async function runMutation<T>(opts: MutationOpts<T>): Promise<T> {
   const taskId = opts.trackAsTask ? taskRunner.begin(opts.kind) : null;
+  // The project is resolved at *call* time, not completion time: the user can
+  // switch tabs while the invoke is in flight, and the notice has to belong to
+  // the repo that started the work rather than whichever tab is focused when
+  // it lands.
+  //
+  // A mutation tracked as a task is reported by the status-bar Tasks slot
+  // already, so it must not also raise this dialog — one operation, one
+  // progress surface. That is why `trackAsTask` (rather than a kind list) is
+  // what excludes fetch / pull / push / rebase here.
+  const projectPath = opts.busyNotice === false ? null : get(activeRepoPath);
+  const busyId =
+    projectPath !== null && !taskId && isSlowOpKind(opts.kind)
+      ? beginBusy(projectPath, opts.kind)
+      : null;
   try {
     const result = await opts.invoke();
     if (opts.successToast) {
@@ -98,5 +125,7 @@ export async function runMutation<T>(opts: MutationOpts<T>): Promise<T> {
       ],
     });
     throw err;
+  } finally {
+    endBusy(projectPath, busyId);
   }
 }

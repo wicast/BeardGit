@@ -1393,5 +1393,11 @@
   "compare_load_more": "Cargar más",
   "compare_files_title": "Archivos Cambiados ({count})",
   "compare_no_files": "Sin cambios de archivos.",
-  "compare_diff_error": "No se pudo cargar el diff del archivo"
+  "compare_diff_error": "No se pudo cargar el diff del archivo",
+  "busy_title": "Operación en curso",
+  "busy_op_running": "Ejecutando {op}…",
+  "busy_ops_queued": "{count} operación(es) más en cola en este repositorio",
+  "busy_elapsed": "{seconds} s",
+  "busy_hint": "Git sigue leyendo y escribiendo en {project}. Los repositorios grandes pueden tardar; la operación terminará sola.",
+  "busy_run_in_background": "Ejecutar en segundo plano"
 }

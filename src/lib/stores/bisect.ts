@@ -8,8 +8,20 @@
 import { get, writable } from "svelte/store";
 import * as api from "$lib/api/tauri";
 import { tasks, cancelTask } from "$lib/stores/taskPanel";
+import { withBusyNotice } from "$lib/stores/busyOps";
+import { activeRepoPath } from "$lib/stores/repo-state";
 import { whenRepoSwitchSettled } from "./repoSwitchReadiness";
 import type { BisectState, TaskId } from "$lib/types";
+
+/**
+ * Every bisect step checks a commit out, so it rewrites the working tree
+ * just like a checkout would. `runAutoBisect` is deliberately not wrapped:
+ * it is a cancellable background task with its own loading state, and it can
+ * legitimately run for as long as the user's test command takes.
+ */
+function busy<T>(kind: string, fn: () => Promise<T>): Promise<T> {
+  return withBusyNotice(get(activeRepoPath), kind, fn);
+}
 
 /** Reactive bisect session state. */
 export const bisectState = writable<BisectState>({
@@ -74,35 +86,35 @@ export async function startBisect(
   bad?: string,
   good?: string,
 ): Promise<string> {
-  const result = await api.bisectStart(bad, good);
+  const result = await busy("bisect_step", () => api.bisectStart(bad, good));
   await refreshBisectState();
   return result;
 }
 
 /** Mark a commit (or current HEAD) as good. */
 export async function markGood(commit?: string): Promise<string> {
-  const result = await api.bisectGood(commit);
+  const result = await busy("bisect_step", () => api.bisectGood(commit));
   await refreshBisectState();
   return result;
 }
 
 /** Mark a commit (or current HEAD) as bad. */
 export async function markBad(commit?: string): Promise<string> {
-  const result = await api.bisectBad(commit);
+  const result = await busy("bisect_step", () => api.bisectBad(commit));
   await refreshBisectState();
   return result;
 }
 
 /** Skip the current commit. */
 export async function skipCommit(): Promise<string> {
-  const result = await api.bisectSkip();
+  const result = await busy("bisect_step", () => api.bisectSkip());
   await refreshBisectState();
   return result;
 }
 
 /** Reset (end) the bisect session. */
 export async function resetBisect(): Promise<string> {
-  const result = await api.bisectReset();
+  const result = await busy("bisect_reset", () => api.bisectReset());
   bisectState.set({
     active: false,
     current_commit: null,

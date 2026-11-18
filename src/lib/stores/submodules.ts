@@ -6,7 +6,7 @@
  * Update operations return TaskIds for background tracking.
  */
 
-import { writable } from "svelte/store";
+import { get, writable } from "svelte/store";
 import type { SubmoduleInfo, TaskId } from "../types";
 import {
   listSubmodules as apiList,
@@ -19,6 +19,8 @@ import {
   submoduleAbsPath as apiAbsPath,
 } from "../api/tauri";
 import { createFetchGuard, fetchIntoStore } from "../utils/store-helpers";
+import { withBusyNotice } from "./busyOps";
+import { activeRepoPath } from "./repo-state";
 import { whenRepoSwitchSettled } from "./repoSwitchReadiness";
 
 /** List of submodules in the active repository. */
@@ -48,7 +50,11 @@ export function clearSubmoduleState(): void {
 
 /** Initialize a submodule and refresh the list. */
 export async function initSubmodule(path: string): Promise<void> {
-  await apiInit(path);
+  // `init` checks the submodule's tree out — real working-tree IO. The
+  // task-backed trio below (`update`, `updateAll`, `add`) is deliberately not
+  // wrapped: their invoke resolves when the task *spawns*, so the notice would
+  // close while the clone was still running. Those live in the Tasks drawer.
+  await withBusyNotice(get(activeRepoPath), "submodule_init", () => apiInit(path));
   await refreshSubmodules();
 }
 
@@ -64,7 +70,9 @@ export async function updateAllSubmodules(): Promise<TaskId> {
 
 /** Deinitialize a submodule and refresh the list. */
 export async function deinitSubmodule(path: string, force: boolean): Promise<void> {
-  await apiDeinit(path, force);
+  await withBusyNotice(get(activeRepoPath), "submodule_deinit", () =>
+    apiDeinit(path, force),
+  );
   await refreshSubmodules();
 }
 
@@ -83,7 +91,7 @@ export async function addSubmodule(url: string, path: string): Promise<TaskId> {
 
 /** Remove a submodule completely and refresh the list. */
 export async function removeSubmodule(path: string): Promise<void> {
-  await apiRemove(path);
+  await withBusyNotice(get(activeRepoPath), "submodule_remove", () => apiRemove(path));
   await refreshSubmodules();
 }
 

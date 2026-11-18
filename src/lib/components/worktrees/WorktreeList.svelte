@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { get } from "svelte/store";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
   import ContextMenu from "../common/ContextMenu.svelte";
   import type { MenuItem } from "../common/ContextMenu.svelte";
@@ -16,6 +17,8 @@
   import { openProjectTab } from "../../stores/projects";
   import { repoInfo } from "../../stores/repo";
   import { lockWorktree, unlockWorktree } from "../../api/tauri";
+  import { withBusyNotice } from "../../stores/busyOps";
+  import { activeRepoPath } from "../../stores/repo-state";
   import { navigateToCommit } from "../../stores/graph";
   import type { EnrichedWorktree } from "$lib/types";
   import type { AiProviderKind } from "$lib/types";
@@ -91,8 +94,12 @@
 
   async function handleLock(wt: EnrichedWorktree) {
     try {
-      await lockWorktree(wt.path);
-      await refreshWorktrees();
+      // Goes through the busy tracker rather than `runMutation` because this
+      // pair calls the API wrapper directly (no toast policy to inherit).
+      await withBusyNotice(get(activeRepoPath), "worktree_lock", async () => {
+        await lockWorktree(wt.path);
+        await refreshWorktrees();
+      });
     } catch (err) {
       // Lock failure is non-fatal — toast or alert
       console.error("Failed to lock worktree:", err);
@@ -101,8 +108,10 @@
 
   async function handleUnlock(wt: EnrichedWorktree) {
     try {
-      await unlockWorktree(wt.path);
-      await refreshWorktrees();
+      await withBusyNotice(get(activeRepoPath), "worktree_unlock", async () => {
+        await unlockWorktree(wt.path);
+        await refreshWorktrees();
+      });
     } catch (err) {
       console.error("Failed to unlock worktree:", err);
     }

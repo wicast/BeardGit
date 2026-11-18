@@ -29,6 +29,7 @@
 import { writable, derived, type Writable, type Readable } from "svelte/store";
 import type { ProjectSnapshot } from "$lib/types";
 import { BranchesSlice } from "./BranchesSlice";
+import { BusySlice } from "./BusySlice";
 import { ChangesSlice } from "./ChangesSlice";
 import { CompareSlice } from "./CompareSlice";
 import { RequestsSlice } from "./RequestsSlice";
@@ -37,6 +38,8 @@ import { MrPrSlice } from "./MrPrSlice";
 import { IssuesSlice } from "./IssuesSlice";
 
 export { BranchesSlice } from "./BranchesSlice";
+export { BusySlice } from "./BusySlice";
+export type { BusyOp } from "./BusySlice";
 export { ChangesSlice } from "./ChangesSlice";
 export { CompareSlice } from "./CompareSlice";
 export { RequestsSlice } from "./RequestsSlice";
@@ -54,6 +57,13 @@ export class RepoState {
   readonly graph = new GraphSlice();
   readonly mrPr = new MrPrSlice();
   readonly issues = new IssuesSlice();
+  /**
+   * Mutations in flight against this repo, plus the derived slow-op notice
+   * flags. Written by `busyOps.ts` on behalf of every UI-initiated git
+   * command; read by `BusyDialog.svelte` for the *active* repo only, which is
+   * what keeps a slow operation in one tab from blocking out another.
+   */
+  readonly busy = new BusySlice();
   /**
    * Last sidebar view this repo was browsed on. Restored on tab
    * re-activation (filtered through `viewMemory.ts`'s rememberable-view
@@ -207,6 +217,7 @@ export function __resetRepoStateForTests(): void {
   detachedRepoState.graph.reset();
   detachedRepoState.mrPr.clear();
   detachedRepoState.issues.clear();
+  detachedRepoState.busy.clear();
   detachedRepoState.lastView.set("");
   detachedRepoState.snapshot.set(null);
   activeRepoPath.set(null);

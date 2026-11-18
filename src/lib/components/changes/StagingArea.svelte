@@ -22,6 +22,7 @@
   import { addToast } from "$lib/stores/toast";
   import { repoInfo } from "$lib/stores/repo";
   import { whenRepoSwitchSettled } from "$lib/stores/repoSwitchReadiness";
+  import { withBusyNotice } from "$lib/stores/busyOps";
   import { activeProject } from "$lib/stores/projects";
   import { taskOutput } from "$lib/stores/taskPanel";
   import { setTaskSubtitle } from "$lib/stores/tasks";
@@ -248,7 +249,11 @@
 
   async function handleCreatePatch() {
     try {
-      const patchText = await createWorkingTreePatch(patchStagedOnly);
+      // Only the diff generation is tracked: `save()` below opens a native
+      // dialog, and waiting on the user is not the IO the notice is about.
+      const patchText = await withBusyNotice(projectPath, "patch_create", () =>
+        createWorkingTreePatch(patchStagedOnly),
+      );
       const filePath = await save({
         title: m.patch_save_dialog_title(),
         defaultPath: "changes.patch",
