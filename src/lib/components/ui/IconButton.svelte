@@ -51,6 +51,8 @@
     disabled?: boolean;
     /** Click handler; skipped while loading or disabled. */
     onclick?: (event: MouseEvent) => void;
+    /** Right-click handler; skipped while loading or disabled. */
+    oncontextmenu?: (event: MouseEvent) => void;
     /** Optional `data-testid` forwarded to the underlying `<button>`. */
     testid?: string;
     /** Override `aria-label`. Defaults to `description` when omitted. */
@@ -71,6 +73,7 @@
     loading = false,
     disabled = false,
     onclick,
+    oncontextmenu,
     testid,
     ariaLabel,
     active = false,
@@ -85,6 +88,11 @@
       return;
     }
     onclick?.(event);
+  }
+
+  function handleContextMenu(event: MouseEvent) {
+    if (loading || disabled) return;
+    oncontextmenu?.(event);
   }
 </script>
 
@@ -101,6 +109,7 @@
   title={description}
   data-testid={testid}
   onclick={handleClick}
+  oncontextmenu={handleContextMenu}
 >
   {#if loading}
     <span class="ic-btn__glyph nf" aria-hidden="true">{""}</span>

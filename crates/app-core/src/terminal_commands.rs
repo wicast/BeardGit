@@ -6,20 +6,41 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use tauri::State;
-use terminal::{SessionId, TerminalConfig, TerminalManager};
+use terminal::{
+    SessionId, ShellOption, TerminalConfig, TerminalManager, available_shells, resolve_shell,
+};
+
+/// Shells the terminal picker can offer on this host.
+#[tauri::command]
+pub fn terminal_list_shells() -> Vec<ShellOption> {
+    available_shells()
+}
 
 /// Spawn a new terminal session in the given directory.
+///
+/// `shell` is a path from [`terminal_list_shells`], echoed back verbatim;
+/// `None` uses the system default.
 #[tauri::command]
 pub fn terminal_spawn(
     cwd: String,
     cols: u16,
     rows: u16,
+    shell: Option<String>,
     terminal_manager: State<'_, Arc<TerminalManager>>,
 ) -> Result<SessionId, IpcError> {
+    // Args are re-derived from the discovered shell instead of being taken
+    // from the payload: Git Bash needs `--login -i` to start interactively,
+    // and letting the renderer pick args would reopen the `-c "…"` RCE hole
+    // `is_safe_shell_arg` closes.
+    let args = shell
+        .as_deref()
+        .and_then(resolve_shell)
+        .map(|discovered| discovered.args)
+        .unwrap_or_default();
     let config = TerminalConfig {
         cwd: PathBuf::from(cwd),
-        shell: None,
-        args: Vec::new(),
+        shell,
+        args,
         env: HashMap::new(),
         cols,
         rows,

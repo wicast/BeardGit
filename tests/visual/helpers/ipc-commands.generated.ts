@@ -315,6 +315,7 @@ export type IpcCommandName =
   | "switch_project"
   | "task_cancel"
   | "terminal_kill"
+  | "terminal_list_shells"
   | "terminal_resize"
   | "terminal_set_active"
   | "terminal_spawn"

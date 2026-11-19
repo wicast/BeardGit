@@ -11,8 +11,9 @@ pub mod sink;
 pub mod types;
 
 pub use manager::TerminalManager;
+pub use shell::{available_shells, resolve_shell};
 pub use sink::TerminalEventSink;
 pub use types::{
-    SessionId, TerminalConfig, TerminalCwdChangedEvent, TerminalError, TerminalExitEvent,
-    TerminalOutputEvent, TerminalProcessChangedEvent,
+    SessionId, ShellOption, TerminalConfig, TerminalCwdChangedEvent, TerminalError,
+    TerminalExitEvent, TerminalOutputEvent, TerminalProcessChangedEvent,
 };

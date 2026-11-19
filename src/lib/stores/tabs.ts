@@ -213,12 +213,14 @@ export function syncProjectTabs(projects: ProjectInfo[]): void {
 /** Open a new terminal tab. If cwd matches an open project tab, promote to
  *  composite in-place. If cwd matches a composite, add a new terminal segment.
  *  Otherwise create a standalone terminal tab.
+ *  `shell` is a path from the shell picker; omit it for the system default.
  *  Returns the session ID. */
 export async function openTerminalTab(
   cwd: string,
   title: string,
+  shell?: string | null,
 ): Promise<number> {
-  const sessionId = await terminalSpawn(cwd, 80, 24);
+  const sessionId = await terminalSpawn(cwd, 80, 24, shell);
   const info: TerminalTabInfo = { sessionId, title, cwd };
   const segment: LinkedSegment = { type: "terminal", info };
 
@@ -268,12 +270,14 @@ export async function openTerminalTab(
   return sessionId;
 }
 
-/** Open a standalone terminal tab, always creating a new tab regardless of existing project tabs. */
+/** Open a standalone terminal tab, always creating a new tab regardless of existing project tabs.
+ *  `shell` is a path from the shell picker; omit it for the system default. */
 export async function openStandaloneTerminal(
   cwd: string,
   title: string,
+  shell?: string | null,
 ): Promise<number> {
-  const sessionId = await terminalSpawn(cwd, 80, 24);
+  const sessionId = await terminalSpawn(cwd, 80, 24, shell);
   const info: TerminalTabInfo = { sessionId, title, cwd };
   const tabs = get(openTabs);
   const newTabs = [...tabs, { kind: "terminal" as const, terminal: info }];

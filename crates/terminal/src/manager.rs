@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 
-use crate::shell::detect_shell;
+use crate::shell::{detect_shell, resolve_shell};
 use crate::sink::TerminalEventSink;
 use crate::types::{SessionId, TerminalConfig, TerminalError};
 
@@ -72,11 +72,11 @@ impl TerminalManager {
     /// cannot turn the terminal into an arbitrary-binary/RCE primitive.
     /// App-built commands (e.g. AI CLIs) must use [`Self::spawn_program`].
     pub fn spawn(&self, config: TerminalConfig) -> Result<SessionId, TerminalError> {
-        // Validate shell: must be either the auto-detected default, or
-        // one listed in `/etc/shells` (Unix) / explicit allowlist
-        // (Windows). Rejecting arbitrary `shell` paths prevents an XSS
-        // in the webview from spawning a shell of its choice (and an
-        // arbitrary attacker-controlled binary masquerading as one).
+        // Validate shell: must be either the auto-detected default, or one
+        // this host's shell discovery enumerated. Rejecting arbitrary `shell`
+        // paths prevents an XSS in the webview from spawning a shell of its
+        // choice (and an arbitrary attacker-controlled binary masquerading
+        // as one).
         let shell = match config.shell.as_deref() {
             None => detect_shell().unwrap_or_else(|_| default_shell()),
             Some(s) => validate_shell(s)?.to_string(),
@@ -377,13 +377,21 @@ fn default_shell() -> String {
     }
 }
 
-/// Validate a shell path requested by the IPC caller. The shell must
-/// either be the auto-detected default or appear in a known allowlist
-/// (`/etc/shells` on Unix; a small built-in list on Windows). This
-/// closes the XSS-in-webview → arbitrary-binary-spawn vector.
+/// Validate a shell path requested by the IPC caller.
+///
+/// Accepted paths are exactly the ones the app itself can name: the
+/// auto-detected system default, this crate's built-in fallback, and the
+/// shells [`crate::shell::available_shells`] enumerated on this host.
+/// Discovery reads fixed system locations and `PATH` — never the IPC
+/// payload — so a compromised renderer can only echo back a path we already
+/// vetted. That single mechanism replaces the older per-platform allowlists
+/// (`/etc/shells` on Unix, a built-in `cmd.exe`/`pwsh.exe`/… list on
+/// Windows), which discovery subsumes and which could not express Git Bash:
+/// its `bash.exe` lives outside every Windows system directory.
 fn validate_shell(requested: &str) -> Result<&str, TerminalError> {
-    // Accept the auto-detected default verbatim — the detector only
-    // ever returns one of: `$SHELL`, `getpwuid_r` lookup, or `/bin/sh`.
+    // Accept the auto-detected default verbatim — the detector only ever
+    // returns `$SHELL`, `ComSpec`, or the `powershell.exe` fallback that
+    // `default_shell` below also names.
     if let Ok(detected) = detect_shell()
         && detected == requested
     {
@@ -392,26 +400,8 @@ fn validate_shell(requested: &str) -> Result<&str, TerminalError> {
     if requested == default_shell() {
         return Ok(requested);
     }
-
-    #[cfg(unix)]
-    {
-        if let Ok(contents) = std::fs::read_to_string("/etc/shells")
-            && contents
-                .lines()
-                .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
-                .any(|l| l.trim() == requested)
-        {
-            return Ok(requested);
-        }
-    }
-
-    #[cfg(windows)]
-    {
-        const WINDOWS_OK: &[&str] = &["cmd.exe", "powershell.exe", "pwsh.exe", "wsl.exe"];
-        let lower = requested.to_ascii_lowercase();
-        if WINDOWS_OK.iter().any(|s| lower.ends_with(s)) {
-            return Ok(requested);
-        }
+    if resolve_shell(requested).is_some() {
+        return Ok(requested);
     }
 
     Err(TerminalError::SpawnFailed(format!(
@@ -672,6 +662,20 @@ mod tests {
         let default = default_shell();
         // The auto-detected default must always validate.
         assert!(validate_shell(&default).is_ok());
+    }
+
+    /// The picker and the spawner must agree: an entry `available_shells`
+    /// offers but `validate_shell` rejects would show up in the UI as a
+    /// terminal that cannot start.
+    #[test]
+    fn accepts_every_discovered_shell() {
+        for shell in crate::shell::available_shells() {
+            assert!(
+                validate_shell(&shell.path).is_ok(),
+                "picker offers {} but validate_shell rejects it",
+                shell.path
+            );
+        }
     }
 
     /// Regression for the AI-terminal allowlist break: a trusted, app-built

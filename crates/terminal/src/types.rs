@@ -32,6 +32,21 @@ pub struct TerminalConfig {
     pub rows: u16,
 }
 
+/// A shell the terminal picker can offer, as discovered on this host.
+#[derive(Clone, Debug, Serialize)]
+pub struct ShellOption {
+    /// Stable slug the frontend maps to a localized label: `cmd`, `pwsh`,
+    /// `git-bash`, … Unix shells use their binary's basename (`zsh`).
+    pub kind: String,
+    /// Resolved absolute path. The UI echoes it back to `terminal_spawn`;
+    /// `resolve_shell` then re-applies this shell's own launch args.
+    pub path: String,
+    /// Arguments needed to start this shell interactively. Backend-only:
+    /// the renderer must not be able to choose them.
+    #[serde(skip)]
+    pub args: Vec<String>,
+}
+
 /// Payload for the `terminal-output` Tauri event.
 #[derive(Clone, Debug, Serialize)]
 pub struct TerminalOutputEvent {

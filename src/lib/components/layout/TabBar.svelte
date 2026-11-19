@@ -9,6 +9,10 @@
   • Terminal is a plain button. Single click routes through
     `handleTerminalClick`, which either adds a new terminal segment to the
     active project/composite tab or spawns a standalone terminal in `~`.
+    Right-click opens a shell picker (`ContextMenu`) listing the shells the
+    backend discovered on this host — cmd / PowerShell / pwsh / Git Bash on
+    Windows, `$SHELL` plus `/etc/shells` elsewhere — and re-routes through the
+    same handler with the chosen shell.
   • AI is an always-dropdown gated on `$aiProviders.length > 0`. The menu
     lists one row per installed provider (click → `openAiTerminalTab`) and,
     below a divider, a "Launch session in background…" row
@@ -46,6 +50,10 @@
   import { aiProviders } from "$lib/stores/ai";
   import { requestOpenCreateBackgroundRunDialog } from "$lib/stores/aiBackground";
   import { addToast } from "$lib/stores/toast";
+  import { shellOptions, ensureShellsLoaded } from "$lib/stores/shells";
+  import { shellLabel } from "$lib/utils/shell-label";
+  import ContextMenu from "$lib/components/common/ContextMenu.svelte";
+  import type { MenuItem } from "$lib/components/common/ContextMenu.svelte";
   import { revealInFileManager } from "$lib/api/tauri";
   import type { AiProviderKind } from "$lib/types";
   import { fetchRemote, pullRemote, pushRemote } from "$lib/api/tauri";
@@ -208,6 +216,9 @@
   let pushInProgress = $state(false);
   let aiMenuOpen = $state(false);
   let aiMenuRef = $state<HTMLDivElement | null>(null);
+  let shellMenuVisible = $state(false);
+  let shellMenuX = $state(0);
+  let shellMenuY = $state(0);
 
   async function getHomePath(): Promise<string> {
     try {
@@ -350,21 +361,46 @@
     }
   }
 
-  async function handleTerminalClick() {
+  /** Open a terminal, optionally with an explicit shell from the picker.
+   *  Omitting `shell` keeps the system default, which is what the plain
+   *  left-click does. */
+  async function handleTerminalClick(shell?: string | null) {
     const tab = $openTabs[$activeTabIndex];
 
     // Project or composite tab → always add a new terminal to the composite
     if (tab?.kind === "project" || tab?.kind === "composite") {
       const cwd = tab.project.path;
       const name = cwd.split("/").pop() ?? "Terminal";
-      await openTerminalTab(cwd, `${m.tab_terminal()} · ${name}`);
+      await openTerminalTab(cwd, `${m.tab_terminal()} · ${name}`, shell);
       return;
     }
 
     // Standalone terminal tab or no tabs → open in ~
     const home = await getHomePath();
-    await openStandaloneTerminal(home, m.tab_terminal());
+    await openStandaloneTerminal(home, m.tab_terminal(), shell);
   }
+
+  /** Right-click the terminal button → pick which shell to open. The list is
+   *  host-specific and fetched once; awaiting it here costs an IPC round-trip
+   *  on the first right-click only. */
+  async function handleTerminalContextMenu(e: MouseEvent) {
+    e.preventDefault();
+    await ensureShellsLoaded();
+    shellMenuX = e.clientX;
+    shellMenuY = e.clientY;
+    shellMenuVisible = true;
+  }
+
+  let shellMenuItems = $derived<MenuItem[]>([
+    { label: m.terminal_shell_default(), action: () => void handleTerminalClick() },
+    { separator: true },
+    ...$shellOptions.map(
+      (shell): MenuItem => ({
+        label: shellLabel(shell),
+        action: () => void handleTerminalClick(shell.path),
+      }),
+    ),
+  ]);
 
   async function handleFetch() {
     if (fetchInProgress) return;
@@ -511,7 +547,8 @@
       description={m.tab_terminal_here()}
       testid="toolbar-terminal-btn"
       tone="default"
-      onclick={handleTerminalClick}
+      onclick={() => void handleTerminalClick()}
+      oncontextmenu={handleTerminalContextMenu}
     />
     {#if ($aiProviders?.filter((p) => !p.is_http)?.length ?? 0) > 0}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -599,6 +636,14 @@
     <WindowControls />
   </div>
 </div>
+
+<ContextMenu
+  items={shellMenuItems}
+  x={shellMenuX}
+  y={shellMenuY}
+  visible={shellMenuVisible}
+  onClose={() => (shellMenuVisible = false)}
+/>
 
 <style>
   .tab-bar {

@@ -521,6 +521,7 @@ pub fn run() {
             app_core::commands::get_editor_preferences,
             app_core::commands::set_editor_preferences,
             // Terminal
+            app_core::terminal_commands::terminal_list_shells,
             app_core::terminal_commands::terminal_spawn,
             app_core::terminal_commands::terminal_write,
             app_core::terminal_commands::terminal_resize,

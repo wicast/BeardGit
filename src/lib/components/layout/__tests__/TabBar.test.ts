@@ -3,6 +3,7 @@
  *
  * Covers:
  * - Terminal button is a plain button (no chevron / no dropdown).
+ * - Right-clicking it opens a shell picker that spawns the chosen shell.
  * - AI button is hidden when no providers are installed.
  * - AI button opens a dropdown with one row per provider + a divider
  *   + a "Launch session in background…" row.
@@ -14,11 +15,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/svelte";
 import { get } from "svelte/store";
 import { aiProviders } from "$lib/stores/ai";
+import { shellOptions } from "$lib/stores/shells";
 import { openTabs, activeTabIndex } from "$lib/stores/tabs";
 import {
   openCreateBackgroundRunDialogRequest,
 } from "$lib/stores/aiBackground";
-import type { AvailableAiProvider } from "$lib/types";
+import type { AvailableAiProvider, ShellOption } from "$lib/types";
+import * as m from "$lib/paraglide/messages";
 
 const tabsMocks = vi.hoisted(() => ({
   openTerminalTab: vi.fn().mockResolvedValue(1),
@@ -51,6 +54,7 @@ const PROVIDERS: AvailableAiProvider[] = [
 
 beforeEach(() => {
   aiProviders.set([]);
+  shellOptions.set([]);
   openTabs.set([]);
   activeTabIndex.set(-1);
   openCreateBackgroundRunDialogRequest.set(0);
@@ -78,6 +82,100 @@ describe("TabBar — terminal button", () => {
       expect(tabsMocks.openStandaloneTerminal).toHaveBeenCalledTimes(1),
     );
     expect(tabsMocks.openStandaloneTerminal.mock.calls[0][0]).toBe("/Users/test");
+  });
+});
+
+describe("TabBar — terminal shell picker", () => {
+  const SHELLS: ShellOption[] = [
+    { kind: "cmd", path: "C:\\Windows\\System32\\cmd.exe" },
+    { kind: "git-bash", path: "C:\\Program Files\\Git\\bin\\bash.exe" },
+  ];
+
+  /** Rows of the open picker, in menu order (separators excluded). */
+  function rows(container: HTMLElement): HTMLElement[] {
+    return [...container.querySelectorAll<HTMLElement>(".context-menu .menu-item")];
+  }
+
+  async function openPicker(
+    container: HTMLElement,
+    getByTestId: (id: string) => HTMLElement,
+  ): Promise<void> {
+    await fireEvent.contextMenu(getByTestId("toolbar-terminal-btn"), {
+      clientX: 120,
+      clientY: 30,
+    });
+    // handleTerminalContextMenu awaits the (cached) shell load first.
+    await waitFor(() => expect(container.querySelector(".context-menu")).toBeTruthy());
+  }
+
+  it("stays closed until the button is right-clicked", () => {
+    shellOptions.set(SHELLS);
+    const { container } = render(TabBar);
+    expect(container.querySelector(".context-menu")).toBeNull();
+  });
+
+  it("lists the default shell plus every discovered shell", async () => {
+    shellOptions.set(SHELLS);
+    const { container, getByTestId } = render(TabBar);
+    await openPicker(container, getByTestId);
+    expect(rows(container).map((row) => row.textContent?.trim())).toEqual([
+      m.terminal_shell_default(),
+      m.terminal_shell_cmd(),
+      m.terminal_shell_git_bash(),
+    ]);
+  });
+
+  it("opens the shell the user picked", async () => {
+    shellOptions.set(SHELLS);
+    const { container, getByTestId } = render(TabBar);
+    await openPicker(container, getByTestId);
+    await fireEvent.click(rows(container)[2]);
+    await waitFor(() =>
+      expect(tabsMocks.openStandaloneTerminal).toHaveBeenCalledWith(
+        "/Users/test",
+        m.tab_terminal(),
+        SHELLS[1].path,
+      ),
+    );
+    // The picker closes itself once a row fires.
+    expect(container.querySelector(".context-menu")).toBeNull();
+  });
+
+  it("opens the system default from the first row", async () => {
+    shellOptions.set(SHELLS);
+    const { container, getByTestId } = render(TabBar);
+    await openPicker(container, getByTestId);
+    await fireEvent.click(rows(container)[0]);
+    await waitFor(() =>
+      expect(tabsMocks.openStandaloneTerminal).toHaveBeenCalledWith(
+        "/Users/test",
+        m.tab_terminal(),
+        undefined,
+      ),
+    );
+  });
+
+  it("offers only the default when nothing was discovered", async () => {
+    const { container, getByTestId } = render(TabBar);
+    await openPicker(container, getByTestId);
+    expect(rows(container).map((row) => row.textContent?.trim())).toEqual([
+      m.terminal_shell_default(),
+    ]);
+  });
+
+  /**
+   * Regression: `onclick` used to be wired straight to `handleTerminalClick`.
+   * Now that the handler takes a shell path, forwarding the `MouseEvent`
+   * would send the event object to the backend as a shell.
+   */
+  it("does not mistake the click event for a shell on left-click", async () => {
+    shellOptions.set(SHELLS);
+    const { getByTestId } = render(TabBar);
+    await fireEvent.click(getByTestId("toolbar-terminal-btn"));
+    await waitFor(() =>
+      expect(tabsMocks.openStandaloneTerminal).toHaveBeenCalledTimes(1),
+    );
+    expect(tabsMocks.openStandaloneTerminal.mock.calls[0][2]).toBeUndefined();
   });
 });
 

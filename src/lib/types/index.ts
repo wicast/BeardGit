@@ -1085,6 +1085,21 @@ export interface CliAuthStatus {
   error: string | null;
 }
 
+// ── Terminal ─────────────────────────────────────────────────────────
+
+/**
+ * A shell the terminal picker can offer, as discovered on this host.
+ *
+ * `kind` is one of `cmd`, `powershell`, `pwsh`, `git-bash` on Windows, or a
+ * binary basename (`zsh`, `fish`, …) on macOS/Linux — see `shellLabel` for
+ * the mapping to localized copy.
+ */
+export interface ShellOption {
+  kind: string;
+  /** Resolved absolute path. Echo it back to `terminalSpawn` verbatim. */
+  path: string;
+}
+
 // ── Tabs ─────────────────────────────────────────────────────────────
 
 /** Metadata for a terminal tab. */
