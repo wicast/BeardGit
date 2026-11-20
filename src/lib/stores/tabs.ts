@@ -221,7 +221,7 @@ export async function openTerminalTab(
   shell?: string | null,
 ): Promise<number> {
   const sessionId = await terminalSpawn(cwd, 80, 24, shell);
-  const info: TerminalTabInfo = { sessionId, title, cwd };
+  const info: TerminalTabInfo = { sessionId, title, cwd, shell: shell ?? null };
   const segment: LinkedSegment = { type: "terminal", info };
 
   const tabs = get(openTabs);
@@ -278,7 +278,7 @@ export async function openStandaloneTerminal(
   shell?: string | null,
 ): Promise<number> {
   const sessionId = await terminalSpawn(cwd, 80, 24, shell);
-  const info: TerminalTabInfo = { sessionId, title, cwd };
+  const info: TerminalTabInfo = { sessionId, title, cwd, shell: shell ?? null };
   const tabs = get(openTabs);
   const newTabs = [...tabs, { kind: "terminal" as const, terminal: info }];
   openTabs.set(newTabs);

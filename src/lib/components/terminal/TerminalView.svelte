@@ -73,6 +73,7 @@
       mode="interactive"
       theme={$activeTheme}
       onData={handleData}
+      shell={terminal.shell ?? null}
     />
   {/if}
 </div>

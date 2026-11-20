@@ -1109,6 +1109,12 @@ export interface TerminalTabInfo {
   cwd: string;
   /** When set, the tab was launched by an AI provider (shows brand icon). */
   provider?: AiProviderKind;
+  /**
+   * Absolute path of the shell this session was spawned with, as returned by
+   * the shell picker. `null`/`undefined` means the system default. Drives
+   * the shell-specific right-click behaviour in the terminal content area.
+   */
+  shell?: string | null;
 }
 
 /** A segment linked to a project in a composite tab. */

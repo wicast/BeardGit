@@ -8,19 +8,91 @@
   import type { ITheme } from "@xterm/xterm";
   import type { ThemeData } from "../../types";
   import { acquireInteractive, releaseInteractive } from "./interactive-pool";
+  import ContextMenu from "$lib/components/common/ContextMenu.svelte";
+  import type { MenuItem } from "$lib/components/common/ContextMenu.svelte";
+  import * as m from "$lib/paraglide/messages";
+  import {
+    applyQuickEditRightClick,
+    terminalRightClickBehavior,
+  } from "$lib/utils/terminal-right-click";
 
   interface Props {
     mode: "interactive" | "readonly";
     theme: ThemeData;
     onData?: (data: string) => void;
     fontSize?: number;
+    /** Path of the shell this session runs; null/undefined = system default. */
+    shell?: string | null;
   }
 
-  let { mode, theme, onData, fontSize = 13 }: Props = $props();
+  let { mode, theme, onData, fontSize = 13, shell = null }: Props = $props();
 
   let containerEl: HTMLDivElement | undefined = $state();
   let terminal: XTerm | undefined = $state();
   let fitAddon: FitAddon | undefined = $state();
+
+  // ── Shell-specific right-click ────────────────────────────────────────
+  // Windows consoles (cmd/PowerShell) use QuickEdit: right-click copies a
+  // selection, or pastes when there is none. Git Bash and Unix shells open
+  // a context menu instead — matching what those terminals do natively.
+  const isWindows =
+    typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent);
+
+  let menuVisible = $state(false);
+  let menuX = $state(0);
+  let menuY = $state(0);
+  let menuItems = $state<MenuItem[]>([]);
+
+  async function copySelection(): Promise<void> {
+    const text = terminal?.getSelection() ?? "";
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      /* clipboard may be unavailable in some webviews */
+    }
+  }
+
+  async function pasteClipboard(): Promise<void> {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) terminal?.paste(text);
+    } catch {
+      /* clipboard read can be denied; leave the terminal untouched */
+    }
+  }
+
+  function openContextMenu(): void {
+    menuItems = [
+      {
+        label: m.terminal_menu_copy(),
+        disabled: !terminal?.getSelection(),
+        action: () => void copySelection(),
+      },
+      { label: m.terminal_menu_paste(), action: () => void pasteClipboard() },
+      { label: m.terminal_menu_select_all(), action: () => terminal?.selectAll() },
+    ];
+    menuVisible = true;
+  }
+
+  async function handleContextMenu(e: MouseEvent): Promise<void> {
+    if (mode !== "interactive" || !terminal) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (terminalRightClickBehavior(shell, isWindows) === "quick-edit") {
+      try {
+        await applyQuickEditRightClick(terminal, navigator.clipboard);
+      } catch {
+        /* clipboard may be unavailable in some webviews */
+      }
+      return;
+    }
+
+    menuX = e.clientX;
+    menuY = e.clientY;
+    openContextMenu();
+  }
 
   function toXtermTheme(t: ThemeData): ITheme {
     return {
@@ -81,6 +153,11 @@
 
       terminal.open(containerEl);
 
+      // Capture phase: handle the shell-specific right-click before xterm's
+      // own handlers see the event.
+      const onContextMenu = (e: MouseEvent) => void handleContextMenu(e);
+      containerEl.addEventListener("contextmenu", onContextMenu, { capture: true });
+
       // Load WebGL addon after open (needs canvas context)
       try {
         terminal.loadAddon(new WebglAddon());
@@ -101,6 +178,7 @@
       observer.observe(containerEl);
 
       return () => {
+        containerEl?.removeEventListener("contextmenu", onContextMenu, { capture: true });
         observer.disconnect();
         disconnectFontRefit();
         if (terminal && fitAddon) {
@@ -189,6 +267,16 @@
 </script>
 
 <div class="terminal-container" bind:this={containerEl} style:background={theme.colors.background}></div>
+
+{#if mode === "interactive"}
+  <ContextMenu
+    items={menuItems}
+    x={menuX}
+    y={menuY}
+    visible={menuVisible}
+    onClose={() => (menuVisible = false)}
+  />
+{/if}
 
 <style>
   .terminal-container {
